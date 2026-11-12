@@ -1,0 +1,95 @@
+{
+  "config": {
+    "abort": {
+      "single_instance_allowed": "Energy Tracker is already configured."
+    },
+    "step": {
+      "user": {
+        "title": "Energy Tracker",
+        "description": "Track meter readings for electricity, gas and water, analyse your consumption and get a forecast of your annual bill.",
+        "data": {
+          "show_panel": "Show in sidebar",
+          "panel_title": "Sidebar title"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Energy Tracker options",
+        "data": {
+          "show_panel": "Show in sidebar",
+          "panel_title": "Sidebar title"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "reading": {
+        "name": "Meter reading"
+      },
+      "consumption_month": {
+        "name": "Consumption this month"
+      },
+      "consumption_previous_month": {
+        "name": "Consumption previous month"
+      },
+      "consumption_year": {
+        "name": "Consumption this year"
+      },
+      "forecast_year": {
+        "name": "Forecast this year"
+      },
+      "average_daily": {
+        "name": "Average per day"
+      },
+      "billing_cost": {
+        "name": "Forecast billing period cost"
+      },
+      "billing_balance": {
+        "name": "Expected refund (+) / additional payment (−)"
+      }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Energy Tracker is not set up."
+    },
+    "meter_not_found": {
+      "message": "No meter found for \"{meter}\"."
+    },
+    "invalid_reading": {
+      "message": "Invalid reading: {message}"
+    }
+  },
+  "services": {
+    "add_reading": {
+      "name": "Add meter reading",
+      "description": "Stores a new meter reading.",
+      "fields": {
+        "meter": {
+          "name": "Meter",
+          "description": "Name, meter number or ID of the meter."
+        },
+        "value": {
+          "name": "Value",
+          "description": "Meter reading."
+        },
+        "date": {
+          "name": "Date",
+          "description": "Date of the reading (default: today)."
+        },
+        "reset": {
+          "name": "Meter replaced",
+          "description": "This is the start value of a new meter."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Optional note."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+add_reading:
+  fields:
+    meter:
+      required: true
+      example: "Strom Haushalt"
+      selector:
+        text:
+    value:
+      required: true
+      example: 12345.6
+      selector:
+        number:
+          min: 0
+          max: 1000000000
+          step: any
+          mode: box
+    date:
+      required: false
+      selector:
+        date:
+    reset:
+      required: false
+      default: false
+      selector:
+        boolean:
+    note:
+      required: false
+      selector:
+        text:

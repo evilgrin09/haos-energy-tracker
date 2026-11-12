@@ -1,0 +1,95 @@
+{
+  "config": {
+    "abort": {
+      "single_instance_allowed": "Energy Tracker ist bereits eingerichtet."
+    },
+    "step": {
+      "user": {
+        "title": "Energy Tracker",
+        "description": "Erfasse Zählerstände für Strom, Gas und Wasser, werte deinen Verbrauch aus und erhalte eine Prognose deiner Jahresabrechnung.",
+        "data": {
+          "show_panel": "In der Seitenleiste anzeigen",
+          "panel_title": "Titel in der Seitenleiste"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Energy Tracker Optionen",
+        "data": {
+          "show_panel": "In der Seitenleiste anzeigen",
+          "panel_title": "Titel in der Seitenleiste"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "reading": {
+        "name": "Zählerstand"
+      },
+      "consumption_month": {
+        "name": "Verbrauch aktueller Monat"
+      },
+      "consumption_previous_month": {
+        "name": "Verbrauch Vormonat"
+      },
+      "consumption_year": {
+        "name": "Verbrauch aktuelles Jahr"
+      },
+      "forecast_year": {
+        "name": "Prognose aktuelles Jahr"
+      },
+      "average_daily": {
+        "name": "Durchschnitt pro Tag"
+      },
+      "billing_cost": {
+        "name": "Prognose Kosten Abrechnungszeitraum"
+      },
+      "billing_balance": {
+        "name": "Erwartete Erstattung (+) / Nachzahlung (−)"
+      }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Energy Tracker ist nicht eingerichtet."
+    },
+    "meter_not_found": {
+      "message": "Kein Zähler zu \"{meter}\" gefunden."
+    },
+    "invalid_reading": {
+      "message": "Ungültiger Zählerstand: {message}"
+    }
+  },
+  "services": {
+    "add_reading": {
+      "name": "Zählerstand erfassen",
+      "description": "Speichert einen neuen Zählerstand.",
+      "fields": {
+        "meter": {
+          "name": "Zähler",
+          "description": "Name, Zählernummer oder ID des Zählers."
+        },
+        "value": {
+          "name": "Wert",
+          "description": "Abgelesener Zählerstand."
+        },
+        "date": {
+          "name": "Datum",
+          "description": "Datum der Ablesung (Standard: heute)."
+        },
+        "reset": {
+          "name": "Zählerwechsel",
+          "description": "Dies ist der Anfangsstand eines neuen Zählers."
+        },
+        "note": {
+          "name": "Notiz",
+          "description": "Optionale Notiz."
+        }
+      }
+    }
+  }
+}

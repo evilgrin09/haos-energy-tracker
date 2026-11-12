@@ -1,0 +1,17 @@
+{
+  "entity": {
+    "sensor": {
+      "reading": { "default": "mdi:counter" },
+      "consumption_month": { "default": "mdi:calendar-month" },
+      "consumption_previous_month": { "default": "mdi:calendar-arrow-left" },
+      "consumption_year": { "default": "mdi:calendar-today" },
+      "forecast_year": { "default": "mdi:chart-timeline-variant-shimmer" },
+      "average_daily": { "default": "mdi:chart-bell-curve-cumulative" },
+      "billing_cost": { "default": "mdi:cash-multiple" },
+      "billing_balance": { "default": "mdi:scale-balance" }
+    }
+  },
+  "services": {
+    "add_reading": { "service": "mdi:counter" }
+  }
+}
