@@ -83,6 +83,8 @@ async def test_full_flow(hass: HomeAssistant, entry, hass_ws_client) -> None:
     state = hass.states.get(reading_entity)
     assert float(state.state) == 2200
     assert state.attributes["device_class"] == "energy"
+    # must not be selectable as energy dashboard source (see energy_stats)
+    assert "state_class" not in state.attributes
 
     msg = await _ws(
         client,
@@ -171,3 +173,53 @@ async def test_config_flow(hass: HomeAssistant) -> None:
     )
     assert result["type"] == "create_entry"
     assert result["options"] == {"show_panel": False, "panel_title": "Verbrauch"}
+
+
+async def test_write_commands_need_admin(
+    hass: HomeAssistant, entry, hass_ws_client, hass_read_only_access_token: str
+) -> None:
+    """Users without admin rights can read but not change data."""
+    admin = await hass_ws_client(hass)
+    msg = await _ws(admin, "meter/save", name="Strom", meter_type="electricity", unit="kWh")
+    meter_id = msg["result"]["id"]
+    msg = await _ws(admin, "reading/save", meter_id=meter_id, date="2025-01-01", value=1)
+    reading_id = msg["result"]["id"]
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    for msg_type, data in (
+        ("meter/save", {"name": "X", "meter_type": "gas", "unit": "m³"}),
+        ("meter/delete", {"meter_id": meter_id}),
+        ("reading/save", {"meter_id": meter_id, "date": "2025-02-01", "value": 2}),
+        ("reading/import", {"meter_id": meter_id, "readings": [{"date": "2025-02-01", "value": 2}]}),
+        ("reading/delete", {"reading_id": reading_id}),
+        ("contract/save", {"meter_id": meter_id, "start_date": "2025-01-01"}),
+        ("contract/delete", {"contract_id": "x"}),
+        ("photo/discard", {"photo_id": "a" * 32 + ".jpg"}),
+    ):
+        msg = await _ws(client, msg_type, **data)
+        assert not msg["success"], msg_type
+        assert msg["error"]["code"] == "unauthorized", msg_type
+
+    for msg_type, data in (
+        ("data", {}),
+        ("overview", {}),
+        (
+            "statistics",
+            {"meter_id": meter_id, "start": "2025-01-01", "end": "2025-01-31", "granularity": "day"},
+        ),
+    ):
+        msg = await _ws(client, msg_type, **data)
+        assert msg["success"], msg_type
+    assert len(hass.data[DOMAIN].readings) == 1
+
+
+async def test_remove_entry_deletes_storage(hass: HomeAssistant, entry, hass_ws_client, hass_storage) -> None:
+    """Removing the integration deletes the stored data."""
+    client = await hass_ws_client(hass)
+    await _ws(client, "meter/save", name="Strom", meter_type="electricity", unit="kWh")
+    await hass.data[DOMAIN].async_flush()
+    assert f"{DOMAIN}.data" in hass_storage
+
+    assert await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert f"{DOMAIN}.data" not in hass_storage

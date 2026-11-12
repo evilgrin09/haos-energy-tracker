@@ -15,6 +15,7 @@ import voluptuous as vol
 from . import analysis
 from .calc import GRANULARITIES
 from .const import DOMAIN, METER_TYPES, PROFILES
+from .photo import PHOTO_ID_RE, async_archive_photo, async_discard_photo
 from .store import TrackerError, TrackerStore
 
 _DATE = vol.All(cv.string, cv.date)
@@ -98,6 +99,7 @@ def ws_data(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> di
         "contracts": list(store.contracts.values()),
         "currency": hass.config.currency,
         "photo_available": "ai_task" in hass.config.components,
+        "statistics_available": "recorder" in hass.config.components,
         "today": dt_util.now().date().isoformat(),
     }
 
@@ -117,6 +119,7 @@ def ws_overview(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -
         **METER_SCHEMA,
     }
 )
+@websocket_api.require_admin
 @callback
 @_handler
 def ws_meter_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
@@ -148,21 +151,53 @@ def ws_meter_delete(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any
         vol.Required("type"): f"{DOMAIN}/reading/save",
         vol.Optional("reading_id"): cv.string,
         vol.Optional("force", default=False): cv.boolean,
+        vol.Optional("photo_id"): vol.All(cv.string, vol.Match(PHOTO_ID_RE)),
         **READING_SCHEMA,
     }
 )
-@callback
-@_handler
-def ws_reading_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
-    """Create or update a reading."""
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_reading_save(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Create or update a reading, optionally archiving its photo."""
     data = _dates_to_str(msg)
     reading_id = data.pop("reading_id", None)
     force = data.pop("force", False)
-    if not reading_id:
-        for key in ("meter_id", "date", "value"):
-            if key not in data:
-                raise TrackerError("invalid_format", f"Missing field {key}")
-    return store.save_reading(data, reading_id, force)
+    photo_id = data.pop("photo_id", None)
+    try:
+        store = _store(hass)
+        if not reading_id:
+            for key in ("meter_id", "date", "value"):
+                if key not in data:
+                    raise TrackerError("invalid_format", f"Missing field {key}")
+        reading = store.save_reading(data, reading_id, force)
+        if photo_id:
+            await async_archive_photo(hass, store, photo_id, reading)
+    except TrackerError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"], reading)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/photo/discard",
+        vol.Required("photo_id"): vol.All(cv.string, vol.Match(PHOTO_ID_RE)),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_photo_discard(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Delete an uploaded photo that was not used."""
+    try:
+        await async_discard_photo(hass, msg["photo_id"])
+    except TrackerError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    connection.send_result(msg["id"])
 
 
 @websocket_api.websocket_command(
@@ -180,6 +215,7 @@ def ws_reading_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any
         ],
     }
 )
+@websocket_api.require_admin
 @callback
 @_handler
 def ws_reading_import(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, int]:
@@ -190,6 +226,7 @@ def ws_reading_import(hass: HomeAssistant, store: TrackerStore, msg: dict[str, A
 @websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/reading/delete", vol.Required("reading_id"): cv.string}
 )
+@websocket_api.require_admin
 @callback
 @_handler
 def ws_reading_delete(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> None:
@@ -204,6 +241,7 @@ def ws_reading_delete(hass: HomeAssistant, store: TrackerStore, msg: dict[str, A
         **CONTRACT_SCHEMA,
     }
 )
+@websocket_api.require_admin
 @callback
 @_handler
 def ws_contract_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
@@ -222,6 +260,7 @@ def ws_contract_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, An
 @websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/contract/delete", vol.Required("contract_id"): cv.string}
 )
+@websocket_api.require_admin
 @callback
 @_handler
 def ws_contract_delete(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> None:
@@ -279,6 +318,7 @@ def async_register(hass: HomeAssistant) -> None:
         ws_meter_save,
         ws_meter_delete,
         ws_reading_save,
+        ws_photo_discard,
         ws_reading_import,
         ws_reading_delete,
         ws_contract_save,

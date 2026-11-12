@@ -4,7 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "energy_tracker"
 NAME = "Energy Tracker"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 STORAGE_KEY = f"{DOMAIN}.data"
 STORAGE_VERSION = 1
@@ -23,6 +23,7 @@ PROFILES = ["auto", "flat", "heating", "electricity"]
 UNITS = ["kWh", "MWh", "m³", "L"]
 
 SIGNAL_DATA_UPDATED = f"{DOMAIN}_data_updated"
+DATA_STATISTICS = f"{DOMAIN}_statistics"
 
 SERVICE_ADD_READING = "add_reading"
 ATTR_METER = "meter"

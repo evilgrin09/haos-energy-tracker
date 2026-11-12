@@ -161,6 +161,15 @@ const STRINGS = {
     average_basis: "Durchschnitt basiert auf",
     days_measured: "{n} Tagen Messdaten",
     last_12_months: "Letzte 12 Monate",
+    export_all: "Alle Zähler exportieren (CSV)",
+    export_table: "Tabelle als CSV exportieren",
+    view_photo: "Foto anzeigen",
+    close: "Schließen",
+    read_only: "Nur Administratoren können Zählerstände, Zähler und Verträge ändern.",
+    dashboard_hint: "Energie-Dashboard: Statistik „{name}“",
+    stat_consumption: "Verbrauch",
+    stat_cost: "Kosten",
+    err_unauthorized: "Dafür sind Administratorrechte nötig.",
     photo_button: "Zählerstand per Foto",
     photo_title: "Zählerstand aus Foto",
     photo_loading: "Foto wird ausgewertet …",
@@ -331,6 +340,15 @@ const STRINGS = {
     average_basis: "Average based on",
     days_measured: "{n} days of measured data",
     last_12_months: "Last 12 months",
+    export_all: "Export all meters (CSV)",
+    export_table: "Export table as CSV",
+    view_photo: "Show photo",
+    close: "Close",
+    read_only: "Only administrators can change readings, meters and contracts.",
+    dashboard_hint: "Energy dashboard: statistic “{name}”",
+    stat_consumption: "consumption",
+    stat_cost: "cost",
+    err_unauthorized: "Administrator rights are required for this.",
     photo_button: "Reading from photo",
     photo_title: "Reading from photo",
     photo_loading: "Analysing photo …",
@@ -876,14 +894,16 @@ class EnergyTrackerPanel extends HTMLElement {
       return;
     }
     this._charts = {};
+    const admin = this._hass?.user?.is_admin !== false;
+    content.classList.toggle("readonly", !admin);
     let html = "";
     if (!this._data.meters.length && this._state.tab !== "meters") {
       html = `<div class="card empty">${esc(this._t("no_meters"))}<br><br>
-        <button class="primary" data-action="tab" data-tab="meters" data-new="1">${esc(this._t("add_first_meter"))}</button></div>`;
+        <button class="primary admin-only" data-action="tab" data-tab="meters" data-new="1">${esc(this._t("add_first_meter"))}</button></div>`;
     } else {
       html = this[`_render_${this._state.tab}`]();
     }
-    content.innerHTML = html;
+    content.innerHTML = (admin ? "" : `<div class="notice">${esc(this._t("read_only"))}</div>`) + html;
     this._drawCharts();
   }
 
@@ -895,7 +915,7 @@ class EnergyTrackerPanel extends HTMLElement {
   }
 
   _photoButton() {
-    return `<button class="primary with-icon" data-action="photo"><ha-icon icon="mdi:camera"></ha-icon>${esc(this._t("photo_button"))}</button>`;
+    return `<button class="primary with-icon admin-only" data-action="photo"><ha-icon icon="mdi:camera"></ha-icon>${esc(this._t("photo_button"))}</button>`;
   }
 
   /* photo recognition */
@@ -941,9 +961,31 @@ class EnergyTrackerPanel extends HTMLElement {
   }
 
   _closePhoto() {
-    if (this._photo?.url) URL.revokeObjectURL(this._photo.url);
+    const photo = this._photo;
+    if (photo?.url && !photo.viewer) URL.revokeObjectURL(photo.url);
+    // an uploaded photo that was not saved with a reading is removed again
+    if (photo?.result?.photo_id && !photo.saved) {
+      this._ws("photo/discard", { photo_id: photo.result.photo_id }).catch(() => {});
+    }
     this._photo = null;
     this._renderPhoto();
+  }
+
+  async _viewPhoto(readingId) {
+    const reading = this._data.readings.find((r) => r.id === readingId);
+    if (!reading?.photo) return;
+    try {
+      const media = await this._hass.callWS({ type: "media_source/resolve_media", media_content_id: reading.photo });
+      const meter = this._meter(reading.meter_id);
+      this._photo = {
+        viewer: true,
+        url: media.url,
+        caption: `${meter?.name || ""} · ${this._date(reading.date)} · ${this._num(reading.value, 2)} ${meter?.unit || ""}`,
+      };
+      this._renderPhoto();
+    } catch (err) {
+      this._toast(this._errorText(err), true);
+    }
   }
 
   _photoInfo(result) {
@@ -974,6 +1016,14 @@ class EnergyTrackerPanel extends HTMLElement {
     const p = this._photo;
     if (!p) {
       host.innerHTML = "";
+      return;
+    }
+    if (p.viewer) {
+      host.innerHTML = `<div class="modal-backdrop"><div class="modal card">
+        <div class="card-title">${esc(p.caption)}</div>
+        <img class="photo-preview large" src="${esc(p.url)}" alt="">
+        <div class="buttons end"><button type="button" class="primary" data-action="photo-close">${esc(this._t("close"))}</button></div>
+      </div></div>`;
       return;
     }
     let body;
@@ -1079,7 +1129,7 @@ class EnergyTrackerPanel extends HTMLElement {
         <div><div class="muted">${esc(this._t("last_reading"))}</div>
           <div class="big">${last ? `${this._num(last.value, 2)} ${u}` : esc(this._t("none_yet"))}</div>
           ${last ? `<div class="muted">${this._date(last.date)}</div>` : ""}</div>
-        <button class="primary" data-action="quick-reading" data-meter="${m.id}">${esc(this._t("add_reading"))}</button>
+        <button class="primary admin-only" data-action="quick-reading" data-meter="${m.id}">${esc(this._t("add_reading"))}</button>
       </div>
       <div class="figures">
         ${this._figure(this._t("this_month"), `${this._auto(ov.month_to_date.total)} ${u}`,
@@ -1211,7 +1261,8 @@ class EnergyTrackerPanel extends HTMLElement {
     </div>
     ${s.gran !== "year" ? `<div class="card"><div class="card-title">${esc(this._t("cumulative"))}</div>
       <div class="chart-box" data-chart="cumulative"></div></div>` : ""}
-    <div class="card"><details><summary>${esc(this._t("details"))}</summary>${this._statsTable(stats, meter)}</details></div>`;
+    <div class="card"><details><summary>${esc(this._t("details"))}</summary>${this._statsTable(stats, meter)}</details>
+      <div class="buttons"><button type="button" class="flat" data-action="export-stats">${esc(this._t("export_table"))}</button></div></div>`;
     this._charts.main = () => this._mainChart(stats, meter);
     this._charts.cumulative = () => this._cumulativeChart(stats, meter);
     return html;
@@ -1315,7 +1366,7 @@ class EnergyTrackerPanel extends HTMLElement {
     const editing = s.editReading ? readings.find((r) => r.id === s.editReading) : null;
     const u = esc(meter.unit);
     let html = `<div class="card controls">${this._meterSelect()}${this._photoButton()}</div>
-      <div class="card"><div class="card-title">${esc(editing ? this._t("edit") : this._t("add_reading"))}</div>
+      <div class="card admin-only"><div class="card-title">${esc(editing ? this._t("edit") : this._t("add_reading"))}</div>
       <form data-form="reading" class="form-row">
         <label class="field"><span>${esc(this._t("date"))}</span><input type="date" name="date" required value="${esc(editing?.date || this._data.today)}"></label>
         <label class="field"><span>${esc(this._t("value"))} (${u})</span><input type="text" name="value" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)*" autocomplete="off" required value="${editing ? esc(editing.value) : ""}" autofocus></label>
@@ -1344,17 +1395,18 @@ class EnergyTrackerPanel extends HTMLElement {
         rows.push(`<tr class="${r.id === s.editReading ? "editing" : ""}"><td>${this._date(r.date)}</td>
           <td class="num"><strong>${this._num(r.value, 2)}</strong> ${r.reset ? `<span class="badge q-low">${esc(this._t("replaced_short"))}</span>` : ""}</td>
           <td class="num">${since}</td><td>${esc(r.note || "")}</td>
-          <td class="actions"><button class="icon" data-action="edit-reading" data-id="${r.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
-          <button class="icon" data-action="delete-reading" data-id="${r.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button></td></tr>`);
+          <td class="actions">${r.photo ? `<button class="icon" data-action="view-photo" data-id="${r.id}" title="${esc(this._t("view_photo"))}"><ha-icon icon="mdi:image"></ha-icon></button>` : ""}<button class="icon admin-only" data-action="edit-reading" data-id="${r.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
+          <button class="icon admin-only" data-action="delete-reading" data-id="${r.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button></td></tr>`);
       }
       html += `<div class="card"><div class="table-wrap"><table><thead><tr><th>${esc(this._t("date"))}</th><th class="num">${esc(this._t("value"))} (${u})</th>
         <th class="num">${esc(this._t("since_previous"))}</th><th>${esc(this._t("note"))}</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table></div></div>`;
     }
     html += `<div class="card"><details><summary>${esc(this._t("import_export"))}</summary>
-      <p class="hint">${esc(this._t("import_hint"))}</p>
-      <form data-form="import"><textarea name="csv" rows="6" placeholder="2025-01-01;12345.6"></textarea>
-      <div class="buttons"><button class="primary" type="submit">${esc(this._t("import"))}</button>
-      <button type="button" class="flat" data-action="export">${esc(this._t("export"))}</button></div></form></details></div>`;
+      <p class="hint admin-only">${esc(this._t("import_hint"))}</p>
+      <form data-form="import"><textarea class="admin-only" name="csv" rows="6" placeholder="2025-01-01;12345,6"></textarea>
+      <div class="buttons"><button class="primary admin-only" type="submit">${esc(this._t("import"))}</button>
+      <button type="button" class="flat" data-action="export">${esc(this._t("export"))}</button>
+      <button type="button" class="flat" data-action="export-all">${esc(this._t("export_all"))}</button></div></form></details></div>`;
     return html;
   }
 
@@ -1393,7 +1445,7 @@ class EnergyTrackerPanel extends HTMLElement {
     const meter = this._meter(s.meterId);
     const contracts = this._data.contracts.filter((c) => c.meter_id === s.meterId).sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
     let html = `<div class="card controls">${this._meterSelect()}
-      <button class="primary" data-action="new-contract">${esc(this._t("add_contract"))}</button></div>`;
+      <button class="primary admin-only" data-action="new-contract">${esc(this._t("add_contract"))}</button></div>`;
     if (s.showContractForm) html += this._contractForm(meter, contracts.find((c) => c.id === s.editContract));
     if (!contracts.length && !s.showContractForm) html += `<div class="card empty">${esc(this._t("no_contracts"))}</div>`;
     for (const c of contracts) html += this._contractCard(c, meter);
@@ -1408,8 +1460,8 @@ class EnergyTrackerPanel extends HTMLElement {
     let html = `<div class="card" style="--accent:${TYPE_COLOR[meter.type]}">
       <div class="card-head"><div class="grow"><div class="card-title">${esc(c.provider || this._t("tab_contracts"))}${c.tariff ? ` · ${esc(c.tariff)}` : ""}</div>
         <div class="muted">${this._date(c.start_date)} – ${c.end_date ? this._date(c.end_date) : esc(this._t("open_end"))}${c.customer_number ? ` · ${esc(this._t("customer_number"))} ${esc(c.customer_number)}` : ""}${c.notice_period ? ` · ${esc(this._t("notice_period"))}: ${esc(c.notice_period)}` : ""}</div></div>
-        <button class="icon" data-action="edit-contract" data-id="${c.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
-        <button class="icon" data-action="delete-contract" data-id="${c.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button></div>
+        <button class="icon admin-only" data-action="edit-contract" data-id="${c.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
+        <button class="icon admin-only" data-action="delete-contract" data-id="${c.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button></div>
       <div class="chips">
         <span>${esc(this._t("energy_cost"))}: <strong>${this._num(c.unit_price || 0, 4)} ${esc(cur)}/${esc(billingUnit)}</strong></span>
         <span>${esc(this._t("base_cost"))}: <strong>${this._money(c.base_price || 0)} ${esc(this._t("per_month"))}</strong></span>
@@ -1485,15 +1537,16 @@ class EnergyTrackerPanel extends HTMLElement {
 
   _render_meters() {
     const s = this._state;
-    let html = `<div class="card controls"><button class="primary" data-action="new-meter">${esc(this._t("add_meter"))}</button></div>`;
+    let html = `<div class="card controls admin-only"><button class="primary" data-action="new-meter">${esc(this._t("add_meter"))}</button></div>`;
     if (s.showMeterForm) html += this._meterForm(this._meter(s.editMeter));
     for (const m of this._data.meters) {
       const count = this._data.readings.filter((r) => r.meter_id === m.id).length;
       html += `<div class="card"><div class="card-head">${this._icon(m.type)}
         <div class="grow"><div class="card-title">${esc(m.name)}</div>
-        <div class="muted">${esc(this._t(`type_${m.type}`))} · ${esc(m.unit)}${m.number ? ` · ${esc(m.number)}` : ""} · ${count} ${esc(this._t("tab_readings"))} · ${esc(this._t(`profile_${m.profile || "auto"}`))}${m.annual_estimate ? ` · ${esc(this._t("reference"))}: ${this._auto(m.annual_estimate)} ${esc(m.unit)}` : ""}</div></div>
-        <button class="icon" data-action="edit-meter" data-id="${m.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
-        <button class="icon" data-action="delete-meter" data-id="${m.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button>
+        <div class="muted">${esc(this._t(`type_${m.type}`))} · ${esc(m.unit)}${m.number ? ` · ${esc(m.number)}` : ""} · ${count} ${esc(this._t("tab_readings"))} · ${esc(this._t(`profile_${m.profile || "auto"}`))}${m.annual_estimate ? ` · ${esc(this._t("reference"))}: ${this._auto(m.annual_estimate)} ${esc(m.unit)}` : ""}</div>
+        ${this._data.statistics_available ? `<div class="muted">${esc(this._t("dashboard_hint", { name: `${m.name} ${this._t("stat_consumption")}` }))}</div>` : ""}</div>
+        <button class="icon admin-only" data-action="edit-meter" data-id="${m.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
+        <button class="icon admin-only" data-action="delete-meter" data-id="${m.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button>
       </div></div>`;
     }
     return html;
@@ -1646,6 +1699,15 @@ class EnergyTrackerPanel extends HTMLElement {
         }
         break;
       }
+      case "view-photo":
+        await this._viewPhoto(el.dataset.id);
+        break;
+      case "export-all":
+        this._exportAllCsv();
+        break;
+      case "export-stats":
+        this._exportStatsCsv();
+        break;
       case "export":
         this._exportCsv();
         break;
@@ -1762,7 +1824,10 @@ class EnergyTrackerPanel extends HTMLElement {
         reset: form.elements.reset.checked,
         note: "",
       };
+      // the backend moves the photo into the archive together with the reading
+      if (this._photo?.result?.photo_id) payload.photo_id = this._photo.result.photo_id;
       if (!(await this._saveReading(payload))) return;
+      this._photo.saved = true;
       const number = this._photo?.result?.meter_number;
       if (form.elements.save_number?.checked && number) {
         try {
@@ -1865,16 +1930,84 @@ class EnergyTrackerPanel extends HTMLElement {
     return rows;
   }
 
-  _exportCsv() {
-    const meter = this._meter(this._state.meterId);
-    const readings = this._data.readings.filter((r) => r.meter_id === meter.id);
-    const lines = ["date;value;reset;note", ...readings.map((r) => `${r.date};${r.value};${r.reset ? 1 : 0};${(r.note || "").replace(/[;\n]/g, " ")}`)];
-    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  _csvField(value) {
+    const text = String(value ?? "");
+    return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  _csvNum(value) {
+    return value === null || value === undefined ? "" : this._plain(value);
+  }
+
+  _download(name, rows) {
+    // BOM + semicolons: opens correctly in Excel with a German locale
+    const text = "\ufeff" + rows.map((row) => row.map((v) => this._csvField(v)).join(";")).join("\r\n");
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${meter.name.replace(/[^\w-]+/g, "_")}.csv`;
+    a.download = `${name.replace(/[^\w.-]+/g, "_")}.csv`;
+    this.shadowRoot.appendChild(a);
     a.click();
+    a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  _sortedReadings(meterId) {
+    return this._data.readings
+      .filter((r) => r.meter_id === meterId)
+      .sort((a, b) => (a.date + (a.reset ? 1 : 0) < b.date + (b.reset ? 1 : 0) ? -1 : 1));
+  }
+
+  /** Readings of the selected meter; the file can be imported again. */
+  _exportCsv() {
+    const meter = this._meter(this._state.meterId);
+    const rows = [["date", "value", "reset", "note"]];
+    for (const r of this._sortedReadings(meter.id)) rows.push([r.date, this._csvNum(r.value), r.reset ? 1 : 0, r.note || ""]);
+    this._download(`${meter.name}_${this._data.today}`, rows);
+  }
+
+  /** Readings of all meters including the consumption since the previous reading. */
+  _exportAllCsv() {
+    const rows = [["meter", "meter_number", "type", "unit", "date", "value", "reset", "consumption", "days", "note"]];
+    for (const meter of this._data.meters) {
+      let prev = null;
+      for (const r of this._sortedReadings(meter.id)) {
+        const usable = prev && !r.reset && r.date > prev.date;
+        rows.push([
+          meter.name,
+          meter.number || "",
+          this._t(`type_${meter.type}`),
+          meter.unit,
+          r.date,
+          this._csvNum(r.value),
+          r.reset ? 1 : 0,
+          usable ? this._csvNum(r.value - prev.value) : "",
+          usable ? daysBetween(prev.date, r.date) : "",
+          r.note || "",
+        ]);
+        prev = r;
+      }
+    }
+    this._download(`energy_tracker_${this._data.today}`, rows);
+  }
+
+  /** The evaluation that is currently shown (consumption, estimates, cost, comparison). */
+  _exportStatsCsv() {
+    const stats = this._stats;
+    const meter = this._meter(this._state.meterId);
+    if (!stats || !meter) return;
+    const header = ["start", "end", "measured", "estimated", "forecast", "total", "unit", "cost"];
+    if (stats.compare) header.push("compare_start", "compare_end", "compare_total", "compare_cost");
+    const rows = [header];
+    stats.buckets.forEach((b, i) => {
+      const row = [b.start, b.end, this._csvNum(b.measured), this._csvNum(b.estimated), this._csvNum(b.forecast), this._csvNum(b.total), meter.unit, this._csvNum(b.cost)];
+      if (stats.compare) {
+        const c = stats.compare.buckets[i];
+        row.push(c?.start ?? "", c?.end ?? "", this._csvNum(c?.total), this._csvNum(c?.cost));
+      }
+      rows.push(row);
+    });
+    this._download(`${meter.name}_${stats.granularity}_${stats.start}_${stats.end}`, rows);
   }
 }
 
@@ -1987,6 +2120,8 @@ const STYLE = `
   td.actions button.icon { font-size:inherit; --mdc-icon-size:20px; }
   tr.editing td { background:var(--secondary-background-color); }
   details summary { cursor:pointer; font-weight:500; }
+  .readonly .admin-only { display:none !important; }
+  .photo-preview.large { max-height:70vh; }
   .actions-row { display:flex; justify-content:flex-end; margin-bottom:12px; }
   button.with-icon { display:inline-flex; align-items:center; gap:8px; --mdc-icon-size:20px; }
   .modal-backdrop { position:fixed; inset:0; z-index:15; background:rgba(0,0,0,.55); display:flex; align-items:center;

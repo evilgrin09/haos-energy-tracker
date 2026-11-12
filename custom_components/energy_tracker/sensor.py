@@ -10,7 +10,6 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
-    SensorStateClass,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -92,7 +91,9 @@ SENSORS: tuple[TrackerSensorDescription, ...] = (
     TrackerSensorDescription(
         key="reading",
         translation_key="reading",
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        # No state class on purpose: with one it could be picked in the energy
+        # dashboard, which would book the whole consumption since the last
+        # reading into a single hour.  Use the external statistics instead.
         suggested_display_precision=2,
         value_fn=lambda ov: ov["last_reading"]["value"] if ov["last_reading"] else None,
         attrs_fn=_last_reading_attrs,

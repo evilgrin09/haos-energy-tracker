@@ -10,6 +10,8 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
 - **Zählerstände erfassen** über das Seitenleisten-Panel, per Service (`energy_tracker.add_reading`, nutzbar in Automationen, Skripten und Sprachassistenten) oder per CSV-Import.
   - Plausibilitätsprüfung: Ein Stand darf nicht kleiner als der vorherige sein.
   - **Zählerwechsel**: Den Anfangsstand des neuen Zählers als „Zählerwechsel“ markieren.
+- **Energie-Dashboard**: Pro Zähler schreibt die Integration eine Statistik (Verbrauch und, mit Vertrag, Kosten), die du im Energie-Dashboard von Home Assistant auswählen kannst (siehe [Energie-Dashboard](#energie-dashboard)).
+- **CSV-Export**: Zählerstände eines Zählers, aller Zähler oder die gerade angezeigte Auswertung (siehe [CSV-Export](#csv-export)).
 - **Zählerstand per Foto**: Zähler fotografieren, die Integration liest Zählernummer und Zählerstand aus dem Bild und ordnet das Foto über die Zählernummer automatisch dem richtigen Zähler zu (siehe [Zählerstand per Foto](#zählerstand-per-foto)).
 - **Auswertung** mit der Auflösung **Tag / Woche / Monat / Jahr** und freier Navigation durch die Zeiträume.
   - **Verbrauchsdiagramm** (Balken) und **kumulierter Verlauf** (Linie)
@@ -27,7 +29,7 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
 
 | Sensor | Beschreibung |
 | --- | --- |
-| Zählerstand | Letzter erfasster Stand (`total_increasing`, damit auch im Energie-Dashboard nutzbar) |
+| Zählerstand | Letzter erfasster Stand. Bewusst ohne `state_class`: Für das Energie-Dashboard sind die Statistiken gedacht, nicht dieser Sensor. |
 | Verbrauch aktueller Monat / Vormonat | inkl. Attributen gemessen / geschätzt / Prognose |
 | Verbrauch aktuelles Jahr | bis heute |
 | Prognose aktuelles Jahr | Hochrechnung für das Kalenderjahr inkl. Kosten |
@@ -48,7 +50,9 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
 
 Den Ordner `custom_components/energy_tracker` nach `config/custom_components/` kopieren, Home Assistant neu starten und die Integration hinzufügen.
 
-Voraussetzung: Home Assistant 2025.2 oder neuer.
+Voraussetzung: Home Assistant 2025.11 oder neuer.
+
+Wenn du die Integration entfernst, werden die gespeicherten Zähler, Zählerstände und Verträge sowie die Statistiken gelöscht. Die archivierten Fotos im Medienordner bleiben erhalten.
 
 ## Bedienung
 
@@ -70,6 +74,7 @@ In der Übersicht und unter „Zählerstände“ gibt es den Knopf **Zählerstan
 1. Zähler so fotografieren, dass **Zählerstand und Zählernummer** lesbar sind.
 2. Die Integration erkennt beides und sucht den Zähler mit dieser Nummer. Leerzeichen, Bindestriche und Groß-/Kleinschreibung spielen keine Rolle. Ist nur ein Teil der Nummer zu sehen oder ein Zeichen falsch gelesen, wird der ähnlichste Zähler vorgeschlagen und als „bitte prüfen“ markiert.
 3. Im Dialog stehen der zugeordnete Zähler, der erkannte Wert und der letzte Zählerstand zum Vergleich. Du kannst alles korrigieren und speicherst erst dann. Es wird nie ungefragt gespeichert.
+   Beim Speichern wandert das Foto ins **Fotoarchiv** (siehe unten). Brichst du ab, wird es wieder gelöscht.
 4. Passt die Nummer zu keinem Zähler, wählst du den Zähler aus und kannst die erkannte Nummer gleich bei ihm hinterlegen. Ab dann klappt die Zuordnung automatisch.
 
 **Voraussetzungen**
@@ -78,7 +83,61 @@ In der Übersicht und unter „Zählerstände“ gibt es den Knopf **Zählerstan
 - In Home Assistant ist **AI Task** mit einem KI-Anbieter eingerichtet, der Bilder verarbeiten kann (z. B. OpenAI, Google Gemini, Anthropic oder lokal über Ollama mit einem Vision-Modell). AI Task mit Bild-Anhängen gibt es erst in neueren Home-Assistant-Versionen (getestet mit 2026.2).
 - Welche AI-Task-Entität genutzt wird, legst du in den Optionen der Integration fest. Bleibt das Feld leer, gilt die in Home Assistant bevorzugte AI-Task-Entität.
 
-**Datenschutz und Kosten:** Das Foto wird im Browser verkleinert, an Home Assistant geschickt und von dort an den gewählten KI-Anbieter weitergegeben. Bei Cloud-Anbietern verlässt das Bild also dein Netz und die Auswertung kann etwas kosten. Die Integration löscht das Foto direkt nach der Auswertung wieder aus dem Medienverzeichnis.
+**Fotoarchiv**
+
+Gespeicherte Fotos liegen im Medienordner von Home Assistant, sortiert nach Energieträger, Jahr und Monat:
+
+```
+media/energy_tracker/strom/2026/11/20261112-strom.jpg
+media/energy_tracker/gas/2026/11/20261112-gas.jpg
+media/energy_tracker/wasser/2026/10/20261001-wasser.jpg
+```
+
+- Gibt es mehrere Zähler desselben Energieträgers, hängt die Integration den Zählernamen an, z. B. `20261112-strom-haushalt.jpg`.
+- Der Anfangsstand nach einem Zählerwechsel bekommt den Zusatz `-wechsel`.
+- Ein zweites Foto für denselben Zähler und Tag ersetzt das erste.
+- In der Liste der Zählerstände öffnet das Bild-Symbol das zugehörige Foto. Die Fotos findest du auch unter „Medien“ in Home Assistant.
+- Löschst du einen Zählerstand, bleibt sein Foto im Archiv liegen.
+- Die Ordnernamen sind deutsch, wenn Home Assistant auf Deutsch eingestellt ist, sonst englisch.
+
+**Datenschutz und Kosten:** Das Foto wird im Browser verkleinert (längste Seite 1600 Pixel, JPEG), an Home Assistant geschickt und von dort an den gewählten KI-Anbieter weitergegeben. Bei Cloud-Anbietern verlässt das Bild also dein Netz und die Auswertung kann etwas kosten.
+
+### Energie-Dashboard
+
+Die Integration schreibt pro Zähler eine Langzeitstatistik in den Recorder:
+
+| Statistik | Inhalt |
+| --- | --- |
+| `energy_tracker:<zähler-id>_consumption` („<Zählername> Verbrauch“) | Verbrauch in der Einheit des Zählers |
+| `energy_tracker:<zähler-id>_cost` („<Zählername> Kosten“) | Kosten laut Vertrag (Arbeitspreis × Umrechnungsfaktor + Grundpreis); nur wenn ein Vertrag existiert |
+
+So bindest du sie ein:
+
+1. **Einstellungen → Dashboards → Energie** öffnen.
+2. Im passenden Abschnitt (Stromnetz, Gasverbrauch oder Wasserverbrauch) eine Verbrauchsquelle hinzufügen. Die genauen Bezeichnungen können je nach Home-Assistant-Version leicht abweichen.
+3. Im Auswahlfeld nach dem Zählernamen suchen und die Statistik **„<Zählername> Verbrauch“** wählen (ID `energy_tracker:…_consumption`).
+4. Für die Kosten die Option wählen, bei der eine Entität bzw. Statistik die **Gesamtkosten** erfasst, und dort **„<Zählername> Kosten“** eintragen.
+5. Speichern. Die Werte erscheinen nach kurzer Zeit im Energie-Dashboard, auch rückwirkend.
+
+Wie die Werte entstehen:
+
+- Grundlage sind die Tageswerte der Auswertung, gemessen und geschätzt. Prognosen für die Zukunft werden nicht geschrieben.
+- Jeder Tageswert wird gleichmäßig auf die Stunden des Tages verteilt. Eine genauere Verteilung über den Tag lässt sich aus manuellen Ablesungen nicht ableiten.
+- Die Statistik beginnt am Tag nach der ersten Ablesung und reicht bis zur letzten vollen Stunde. Sie wird stündlich fortgeschrieben.
+- Tage seit der letzten Ablesung sind zunächst Schätzwerte. Sobald du einen neuen Zählerstand erfasst, werden sie durch die gemessenen Werte ersetzt. Dasselbe gilt für rückwirkende oder korrigierte Ablesungen, Zählerwechsel und CSV-Importe: Die Statistik wird ab dem ersten betroffenen Tag neu geschrieben.
+- Wähle im Energie-Dashboard **nicht** den Sensor „Zählerstand“. Er hat deshalb bewusst keine `state_class` mehr.
+
+### CSV-Export
+
+- **Zählerstände eines Zählers:** Reiter „Zählerstände“ → „Import / Export“ → „CSV exportieren“. Die Datei lässt sich über den Import wieder einlesen.
+- **Alle Zähler:** an derselben Stelle „Alle Zähler exportieren (CSV)“. Enthält zusätzlich Zählername, Zählernummer, Art, Einheit sowie Verbrauch und Tage seit der vorherigen Ablesung.
+- **Auswertung:** Reiter „Auswertung“ → „Tabelle als CSV exportieren“. Enthält den gerade angezeigten Zeitraum mit gemessenem, geschätztem und prognostiziertem Verbrauch, Kosten und, falls gewählt, den Vergleichswerten.
+
+Die Dateien nutzen Semikolon als Trennzeichen und bei deutscher Spracheinstellung das Dezimalkomma, sodass Excel sie direkt öffnet.
+
+### Rechte
+
+Lesen und Auswerten kann jeder angemeldete Benutzer. Zähler, Zählerstände und Verträge ändern sowie Fotos hochladen können nur Administratoren.
 
 ### Zählerstand per Automation oder Sprachassistent
 
@@ -114,7 +173,6 @@ Die Rechenlogik liegt in `calc.py` und hat keine Abhängigkeit von Home Assistan
 ## Ideen für später
 
 - Preisänderungen innerhalb eines Vertrags (mehrere Preisstufen)
-- Import der interpolierten Werte in die HA-Langzeitstatistik (Energie-Dashboard)
 - Foto-Erkennung auch als Aktion für Automationen (z. B. mit einer Kamera am Zähler)
 - Erinnerung an die Ablesung
 - Einspeisezähler (PV) und Zwei-Tarif-Zähler (HT/NT)

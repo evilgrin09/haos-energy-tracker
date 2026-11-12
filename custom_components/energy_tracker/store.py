@@ -218,6 +218,13 @@ class TrackerStore:
         return reading
 
     @callback
+    def set_reading_photo(self, reading_id: str, media_id: str | None) -> None:
+        """Link a reading to its archived photo."""
+        if reading_id in self.readings:
+            self.readings[reading_id]["photo"] = media_id
+            self._changed()
+
+    @callback
     def import_readings(
         self, meter_id: str, rows: list[dict[str, Any]], replace: bool = False
     ) -> dict[str, int]:

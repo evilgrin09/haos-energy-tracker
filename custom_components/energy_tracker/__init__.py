@@ -19,7 +19,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ServiceValidationError
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
@@ -34,6 +34,7 @@ from .const import (
     ATTR_VALUE,
     CONF_PANEL_TITLE,
     CONF_SHOW_PANEL,
+    DATA_STATISTICS,
     DOMAIN,
     NAME,
     PANEL_COMPONENT,
@@ -43,6 +44,7 @@ from .const import (
     SIGNAL_DATA_UPDATED,
     STATIC_URL,
 )
+from .energy_stats import StatisticsManager, async_clear_meters
 from .photo import RecognizeView
 from .store import TrackerError, TrackerStore
 
@@ -141,6 +143,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnergyTrackerConfigEntry
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Statistics for the energy dashboard: after every change and once per
+    # hour (to append the hours that have passed).
+    stats = StatisticsManager(hass, store)
+    hass.data[DATA_STATISTICS] = stats
+    entry.async_on_unload(stats.async_shutdown)
+    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_DATA_UPDATED, stats.async_schedule))
+    entry.async_on_unload(async_track_time_change(hass, stats.async_schedule, minute=1, second=0))
+    stats.async_schedule()
+
     @callback
     def _new_day(_now: datetime) -> None:
         """Refresh values once a day (estimates and forecasts change)."""
@@ -162,4 +173,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: EnergyTrackerConfigEntr
         frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
         await entry.runtime_data.async_flush()
         hass.data.pop(DOMAIN, None)
+        hass.data.pop(DATA_STATISTICS, None)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete stored data and statistics when the integration is removed.
+
+    Archived photos in the media directory are kept.
+    """
+    store = TrackerStore(hass)
+    await store.async_load()
+    async_clear_meters(hass, list(store.meters))
+    await store.async_remove()

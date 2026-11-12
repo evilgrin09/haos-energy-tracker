@@ -11,7 +11,12 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.energy_tracker.const import DOMAIN
-from custom_components.energy_tracker.photo import match_meter, normalize_number, parse_reading_value
+from custom_components.energy_tracker.photo import (
+    archive_relative_path,
+    match_meter,
+    normalize_number,
+    parse_reading_value,
+)
 
 METERS = [
     {"id": "el", "name": "Strom", "type": "electricity", "number": "1EMH00 1234 5678"},
@@ -97,7 +102,7 @@ async def client(hass: HomeAssistant, hass_client, enable_custom_integrations, t
     return await hass_client(), meter, tmp_path
 
 
-async def test_recognize_view(hass: HomeAssistant, client) -> None:
+async def test_recognize_view(hass: HomeAssistant, client, hass_ws_client) -> None:
     """A photo is sent to AI Task and matched to the meter."""
     http, meter, tmp_path = client
     hass.config.components.add("ai_task")
@@ -106,7 +111,7 @@ async def test_recognize_view(hass: HomeAssistant, client) -> None:
     async def generate(hass, **kwargs):
         seen.update(kwargs)
         media_id = kwargs["attachments"][0]["media_content_id"]
-        seen["file_existed"] = (tmp_path / DOMAIN / media_id.rsplit("/", 1)[1]).is_file()
+        seen["file_existed"] = (tmp_path / DOMAIN / "tmp" / media_id.rsplit("/", 1)[1]).is_file()
         return SimpleNamespace(data={"meter_number": "1EMH00 1234 5678", "value": "001234,5", "unit": "kWh"})
 
     with patch("homeassistant.components.ai_task.async_generate_data", side_effect=generate):
@@ -114,7 +119,9 @@ async def test_recognize_view(hass: HomeAssistant, client) -> None:
             f"/api/{DOMAIN}/recognize", data=b"\xff\xd8fake", headers={"Content-Type": "image/jpeg"}
         )
     assert resp.status == 200
-    assert await resp.json() == {
+    result = await resp.json()
+    photo_id = result.pop("photo_id")
+    assert result == {
         "meter_number": "1EMH00 1234 5678",
         "value": 1234.5,
         "unit": "kWh",
@@ -125,11 +132,69 @@ async def test_recognize_view(hass: HomeAssistant, client) -> None:
     assert seen["file_existed"]
     assert "1EMH0012345678" in seen["instructions"]
     assert "last reading 1000.0" in seen["instructions"]
-    assert seen["attachments"][0]["media_content_id"].startswith(
-        f"media-source://media_source/local/{DOMAIN}/"
+    assert seen["attachments"][0]["media_content_id"] == (
+        f"media-source://media_source/local/{DOMAIN}/tmp/{photo_id}"
     )
-    # the photo is removed after recognition
-    assert not list((tmp_path / DOMAIN).iterdir())
+    # the photo is kept until the reading is saved or the dialog is cancelled
+    tmp_file = tmp_path / DOMAIN / "tmp" / photo_id
+    assert tmp_file.is_file()
+
+    # saving the reading moves the photo into the archive
+    ws = await hass_ws_client(hass)
+    await ws.send_json_auto_id(
+        {
+            "type": f"{DOMAIN}/reading/save",
+            "meter_id": meter["id"],
+            "date": "2025-03-07",
+            "value": 1234.5,
+            "photo_id": photo_id,
+        }
+    )
+    msg = await ws.receive_json()
+    assert msg["success"], msg
+    archived = tmp_path / DOMAIN / "electricity" / "2025" / "03" / "20250307-electricity.jpg"
+    assert archived.is_file()
+    assert not tmp_file.exists()
+    reading = hass.data[DOMAIN].readings[msg["result"]["id"]]
+    assert reading["photo"] == (
+        f"media-source://media_source/local/{DOMAIN}/electricity/2025/03/20250307-electricity.jpg"
+    )
+
+    # a cancelled dialog discards the upload
+    other = tmp_path / DOMAIN / "tmp" / ("a" * 32 + ".jpg")
+    other.write_bytes(b"x")
+    await ws.send_json_auto_id({"type": f"{DOMAIN}/photo/discard", "photo_id": other.name})
+    assert (await ws.receive_json())["success"]
+    assert not other.exists()
+
+    # path traversal is rejected by the schema
+    await ws.send_json_auto_id({"type": f"{DOMAIN}/photo/discard", "photo_id": "../../secrets.yaml"})
+    assert not (await ws.receive_json())["success"]
+
+
+def test_archive_path() -> None:
+    """Photos are sorted by energy carrier, year and month."""
+    strom = {"id": "a", "name": "Strom Haushalt", "type": "electricity"}
+    waermepumpe = {"id": "b", "name": "Wärmepumpe", "type": "electricity"}
+    gas = {"id": "c", "name": "Gas", "type": "gas"}
+    reading = {"date": "2026-11-12", "reset": False}
+    assert (
+        archive_relative_path(gas, [strom, gas], reading, ".jpg", "de")
+        == "energy_tracker/gas/2026/11/20261112-gas.jpg"
+    )
+    assert (
+        archive_relative_path(strom, [strom, gas], reading, ".png", "de")
+        == "energy_tracker/strom/2026/11/20261112-strom.png"
+    )
+    # several meters of one kind: the meter name keeps the files apart
+    assert (
+        archive_relative_path(waermepumpe, [strom, waermepumpe, gas], reading, ".jpg", "de")
+        == "energy_tracker/strom/2026/11/20261112-strom-warmepumpe.jpg"
+    )
+    assert (
+        archive_relative_path(gas, [gas], {"date": "2026-01-02", "reset": True}, ".jpg", "en")
+        == "energy_tracker/gas/2026/01/20260102-gas-replaced.jpg"
+    )
 
 
 async def test_recognize_errors(hass: HomeAssistant, client) -> None:
@@ -152,4 +217,4 @@ async def test_recognize_errors(hass: HomeAssistant, client) -> None:
         resp = await http.post(url, data=b"x", headers={"Content-Type": "image/png"})
     assert resp.status == 400
     assert (await resp.json())["code"] == "no_ai_entity"
-    assert not list((tmp_path / DOMAIN).iterdir())
+    assert not list((tmp_path / DOMAIN / "tmp").iterdir())

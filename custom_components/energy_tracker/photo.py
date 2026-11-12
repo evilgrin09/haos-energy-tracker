@@ -15,14 +15,16 @@ import logging
 import mimetypes
 from pathlib import Path
 import re
+import time
 from typing import Any
 from uuid import uuid4
 
 from aiohttp import web
-from homeassistant.components.http import KEY_HASS, HomeAssistantView
+from homeassistant.components.http import KEY_HASS, KEY_HASS_USER, HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
+from homeassistant.util import slugify
 import voluptuous as vol
 
 from .const import CONF_AI_TASK_ENTITY, DOMAIN
@@ -33,6 +35,29 @@ _LOGGER = logging.getLogger(__name__)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 RECOGNITION_TIMEOUT = 120
 MEDIA_SUBDIR = DOMAIN
+TMP_SUBDIR = "tmp"
+TMP_MAX_AGE = 24 * 3600
+PHOTO_ID_RE = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]{2,5}$")
+
+# Folder / file names of the photo archive per energy carrier
+CARRIER_NAMES = {
+    "de": {
+        "electricity": "strom",
+        "gas": "gas",
+        "water": "wasser",
+        "heat": "waerme",
+        "oil": "heizoel",
+        "other": "sonstiges",
+    },
+    "en": {
+        "electricity": "electricity",
+        "gas": "gas",
+        "water": "water",
+        "heat": "heat",
+        "oil": "oil",
+        "other": "other",
+    },
+}
 
 MATCH_EXACT = "exact"
 MATCH_PARTIAL = "partial"
@@ -172,10 +197,88 @@ STRUCTURE = vol.Schema(
 
 
 def _write_image(directory: Path, name: str, content: bytes) -> Path:
+    """Store an uploaded photo temporarily and drop forgotten uploads."""
     directory.mkdir(parents=True, exist_ok=True)
+    limit = time.time() - TMP_MAX_AGE
+    for old in directory.iterdir():
+        if old.is_file() and old.stat().st_mtime < limit:
+            old.unlink(missing_ok=True)
     path = directory / name
     path.write_bytes(content)
     return path
+
+
+def media_root(hass: HomeAssistant) -> tuple[str, Path]:
+    """Return id and path of the media directory used for photos."""
+    media_dirs = hass.config.media_dirs
+    dir_id = "local" if "local" in media_dirs else next(iter(media_dirs), None)
+    if dir_id is None:
+        raise TrackerError("no_media_dir", "No media directory is configured")
+    return dir_id, Path(media_dirs[dir_id])
+
+
+def archive_relative_path(
+    meter: dict[str, Any],
+    meters: list[dict[str, Any]],
+    reading: dict[str, Any],
+    extension: str,
+    language: str,
+) -> str:
+    """Path of an archived photo below the media directory.
+
+    ``energy_tracker/<carrier>/<year>/<month>/<yyyymmdd>-<carrier>.<ext>``.
+    If there are several meters of the same kind the meter name is appended.
+    """
+    names = CARRIER_NAMES["de" if language.startswith("de") else "en"]
+    meter_type = meter.get("type", "other")
+    carrier = names.get(meter_type, names["other"])
+    day = str(reading["date"])
+    name = f"{day.replace('-', '')}-{carrier}"
+    if sum(1 for m in meters if m.get("type") == meter_type) > 1:
+        name += f"-{slugify(str(meter.get('name') or meter['id']), separator='-')}"
+    if reading.get("reset"):
+        name += "-wechsel" if language.startswith("de") else "-replaced"
+    return f"{MEDIA_SUBDIR}/{carrier}/{day[0:4]}/{day[5:7]}/{name}{extension}"
+
+
+def _move_photo(source: Path, target: Path) -> bool:
+    if not source.is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.replace(target)
+    return True
+
+
+async def async_archive_photo(
+    hass: HomeAssistant, store: TrackerStore, photo_id: str, reading: dict[str, Any]
+) -> str | None:
+    """Move an uploaded photo into the archive and link it to the reading."""
+    if not PHOTO_ID_RE.match(photo_id):
+        raise TrackerError("invalid_format", "Invalid photo id")
+    dir_id, root = media_root(hass)
+    meter = store.meters[reading["meter_id"]]
+    relative = archive_relative_path(
+        meter,
+        list(store.meters.values()),
+        reading,
+        Path(photo_id).suffix,
+        hass.config.language,
+    )
+    source = root / MEDIA_SUBDIR / TMP_SUBDIR / photo_id
+    if not await hass.async_add_executor_job(_move_photo, source, root / relative):
+        return None
+    media_id = f"media-source://media_source/{dir_id}/{relative}"
+    store.set_reading_photo(reading["id"], media_id)
+    return media_id
+
+
+async def async_discard_photo(hass: HomeAssistant, photo_id: str) -> None:
+    """Delete an uploaded photo that is not needed any more."""
+    if not PHOTO_ID_RE.match(photo_id):
+        return
+    _dir_id, root = media_root(hass)
+    path = root / MEDIA_SUBDIR / TMP_SUBDIR / photo_id
+    await hass.async_add_executor_job(lambda: path.unlink(missing_ok=True))
 
 
 def _configured_entity(hass: HomeAssistant) -> str | None:
@@ -196,14 +299,13 @@ async def async_recognize(
     except ImportError as err:
         raise TrackerError("ai_task_missing", "AI Task is not available") from err
 
-    media_dirs = hass.config.media_dirs
-    dir_id = "local" if "local" in media_dirs else next(iter(media_dirs), None)
-    if dir_id is None:
-        raise TrackerError("no_media_dir", "No media directory is configured")
-
+    dir_id, root = media_root(hass)
     extension = mimetypes.guess_extension(content_type, strict=False) or ".jpg"
+    if not re.fullmatch(r"\.[a-z0-9]{2,5}", extension):
+        extension = ".jpg"
     name = f"{uuid4().hex}{extension}"
-    directory = Path(media_dirs[dir_id]) / MEDIA_SUBDIR
+    directory = root / MEDIA_SUBDIR / TMP_SUBDIR
+    keep = False
     path = await hass.async_add_executor_job(_write_image, directory, name, content)
     try:
         async with asyncio.timeout(RECOGNITION_TIMEOUT):
@@ -215,18 +317,20 @@ async def async_recognize(
                 structure=STRUCTURE,
                 attachments=[
                     {
-                        "media_content_id": f"media-source://media_source/{dir_id}/{MEDIA_SUBDIR}/{name}",
+                        "media_content_id": f"media-source://media_source/{dir_id}/{MEDIA_SUBDIR}/{TMP_SUBDIR}/{name}",
                         "media_content_type": content_type,
                     }
                 ],
             )
+        keep = True
     except TimeoutError as err:
         raise TrackerError("recognition_failed", "The AI model did not answer in time") from err
     except HomeAssistantError as err:
         code = "no_ai_entity" if "entity" in str(err).lower() else "recognition_failed"
         raise TrackerError(code, str(err)) from err
     finally:
-        await hass.async_add_executor_job(lambda: path.unlink(missing_ok=True))
+        if not keep:
+            await hass.async_add_executor_job(lambda: path.unlink(missing_ok=True))
 
     data = result.data if isinstance(result.data, dict) else {}
     _LOGGER.debug("Meter photo recognised: %s", data)
@@ -238,6 +342,9 @@ async def async_recognize(
         "unit": str(data.get("unit") or "").strip(),
         "meter_id": meter["id"] if meter else None,
         "match": match,
+        # The photo is kept until the reading is saved (then it is archived)
+        # or the dialog is cancelled.
+        "photo_id": name,
     }
 
 
@@ -253,6 +360,8 @@ class RecognizeView(HomeAssistantView):
         store: TrackerStore | None = hass.data.get(DOMAIN)
         if store is None:
             return self._error("not_loaded", "Energy Tracker is not set up", HTTPStatus.NOT_FOUND)
+        if not request[KEY_HASS_USER].is_admin:
+            return self._error("unauthorized", "Admin access required", HTTPStatus.FORBIDDEN)
         content_type = request.content_type or ""
         if not content_type.startswith("image/"):
             return self._error("invalid_image", "Request body must be an image")
