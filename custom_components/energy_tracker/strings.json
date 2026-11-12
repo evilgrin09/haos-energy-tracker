@@ -9,7 +9,11 @@
         "description": "Track meter readings for electricity, gas and water, analyse your consumption and get a forecast of your annual bill.",
         "data": {
           "show_panel": "Show in sidebar",
-          "panel_title": "Sidebar title"
+          "panel_title": "Sidebar title",
+          "ai_task_entity": "AI Task entity for photo recognition"
+        },
+        "data_description": {
+          "ai_task_entity": "Used to read meter number and reading from a photo. Empty = preferred AI Task entity of Home Assistant."
         }
       }
     }
@@ -20,7 +24,11 @@
         "title": "Energy Tracker options",
         "data": {
           "show_panel": "Show in sidebar",
-          "panel_title": "Sidebar title"
+          "panel_title": "Sidebar title",
+          "ai_task_entity": "AI Task entity for photo recognition"
+        },
+        "data_description": {
+          "ai_task_entity": "Used to read meter number and reading from a photo. Empty = preferred AI Task entity of Home Assistant."
         }
       }
     }

@@ -161,6 +161,28 @@ const STRINGS = {
     average_basis: "Durchschnitt basiert auf",
     days_measured: "{n} Tagen Messdaten",
     last_12_months: "Letzte 12 Monate",
+    photo_button: "Zählerstand per Foto",
+    photo_title: "Zählerstand aus Foto",
+    photo_loading: "Foto wird ausgewertet …",
+    photo_match_exact: "Zähler „{name}“ anhand der Zählernummer {number} erkannt.",
+    photo_match_similar: "Die erkannte Zählernummer {number} ähnelt dem Zähler „{name}“ ({stored}). Bitte prüfen.",
+    photo_match_single: "Die Zählernummer konnte nicht zugeordnet werden. Der einzige Zähler ist vorausgewählt.",
+    photo_match_none: "Kein Zähler mit der Nummer {number} gefunden. Bitte Zähler auswählen.",
+    photo_no_number: "Keine Zählernummer erkannt. Bitte Zähler auswählen.",
+    photo_no_value: "Der Zählerstand konnte nicht gelesen werden. Bitte von Hand eintragen.",
+    photo_check: "Bitte den erkannten Wert mit dem Foto vergleichen.",
+    photo_save_number: "Erkannte Zählernummer {number} beim gewählten Zähler speichern",
+    photo_retry: "Neues Foto",
+    photo_last: "Letzter Stand: {value} ({date})",
+    choose: "– bitte wählen –",
+    meter_number_hint: "Über die Zählernummer werden Fotos automatisch dem Zähler zugeordnet.",
+    err_ai_task_missing:
+      "Für die Fotoerkennung muss in Home Assistant „AI Task“ mit einem KI-Anbieter eingerichtet sein, der Bilder verarbeiten kann.",
+    err_no_ai_entity:
+      "Es ist keine passende AI-Task-Entität festgelegt. Wähle sie in den Optionen von Energy Tracker oder lege in Home Assistant eine bevorzugte AI-Task-Entität fest.",
+    err_recognition_failed: "Das Foto konnte nicht ausgewertet werden.",
+    err_no_media_dir: "In Home Assistant ist kein Medienverzeichnis eingerichtet.",
+    err_invalid_image: "Die Datei ist kein gültiges Bild oder zu groß.",
   },
   en: {
     title: "Energy Tracker",
@@ -309,6 +331,28 @@ const STRINGS = {
     average_basis: "Average based on",
     days_measured: "{n} days of measured data",
     last_12_months: "Last 12 months",
+    photo_button: "Reading from photo",
+    photo_title: "Reading from photo",
+    photo_loading: "Analysing photo …",
+    photo_match_exact: "Meter “{name}” recognised by its meter number {number}.",
+    photo_match_similar: "The recognised meter number {number} is similar to meter “{name}” ({stored}). Please check.",
+    photo_match_single: "The meter number could not be matched. The only meter is preselected.",
+    photo_match_none: "No meter with number {number} found. Please choose a meter.",
+    photo_no_number: "No meter number recognised. Please choose a meter.",
+    photo_no_value: "The reading could not be read. Please enter it manually.",
+    photo_check: "Please compare the recognised value with the photo.",
+    photo_save_number: "Store recognised meter number {number} for the chosen meter",
+    photo_retry: "New photo",
+    photo_last: "Last reading: {value} ({date})",
+    choose: "– please choose –",
+    meter_number_hint: "Photos are assigned to the meter automatically by its meter number.",
+    err_ai_task_missing:
+      "Photo recognition needs “AI Task” set up in Home Assistant with an AI provider that can process images.",
+    err_no_ai_entity:
+      "No suitable AI Task entity is set. Choose one in the Energy Tracker options or set a preferred AI Task entity in Home Assistant.",
+    err_recognition_failed: "The photo could not be analysed.",
+    err_no_media_dir: "No media directory is configured in Home Assistant.",
+    err_invalid_image: "The file is not a valid image or too large.",
   },
 };
 
@@ -585,6 +629,11 @@ class EnergyTrackerPanel extends HTMLElement {
     return new Intl.NumberFormat(this._lang, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
   }
 
+  /** Number for input fields: no grouping, locale decimal separator. */
+  _plain(value) {
+    return new Intl.NumberFormat(this._lang, { useGrouping: false, maximumFractionDigits: 4 }).format(value);
+  }
+
   _auto(value) {
     const abs = Math.abs(value);
     return this._num(value, abs >= 1000 ? 0 : abs >= 100 ? 1 : 2);
@@ -648,7 +697,8 @@ class EnergyTrackerPanel extends HTMLElement {
   _errorText(err) {
     const key = `err_${err?.code}`;
     const text = this._t(key);
-    return text !== key ? text : err?.message || String(err);
+    if (text === key) return err?.message || String(err);
+    return err?.code === "recognition_failed" && err.message ? `${text}\n${err.message}` : text;
   }
 
   /* -------------------------------------------------------- data flow */
@@ -786,7 +836,14 @@ class EnergyTrackerPanel extends HTMLElement {
       </div>
       <div class="content"></div>
       <div class="tooltip"></div>
+      <div class="modal-host"></div>
+      <input class="photo-input" type="file" accept="image/*" capture="environment" hidden>
       <div class="toast"></div>`;
+    this.shadowRoot.querySelector(".photo-input").addEventListener("change", (ev) => {
+      const file = ev.target.files?.[0];
+      ev.target.value = "";
+      if (file) this._onPhotoSelected(file);
+    });
     const menu = document.createElement("ha-menu-button");
     menu.hass = this._hass;
     menu.narrow = this._narrow;
@@ -837,6 +894,147 @@ class EnergyTrackerPanel extends HTMLElement {
         .join("")}</select></label>`;
   }
 
+  _photoButton() {
+    return `<button class="primary with-icon" data-action="photo"><ha-icon icon="mdi:camera"></ha-icon>${esc(this._t("photo_button"))}</button>`;
+  }
+
+  /* photo recognition */
+
+  async _prepareImage(file) {
+    // Downscale in the browser: faster upload and cheaper recognition.
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
+      if (blob) return blob;
+    } catch (e) {
+      // fall through: send the original file
+    }
+    return file;
+  }
+
+  async _onPhotoSelected(file) {
+    this._closePhoto();
+    const photo = { url: URL.createObjectURL(file), status: "loading" };
+    this._photo = photo;
+    this._renderPhoto();
+    try {
+      const blob = await this._prepareImage(file);
+      const resp = await this._hass.fetchWithAuth(`/api/${DOMAIN}/recognize`, {
+        method: "POST",
+        body: blob,
+        headers: { "Content-Type": blob.type || "image/jpeg" },
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw body.code ? body : { message: `HTTP ${resp.status}` };
+      photo.status = "ready";
+      photo.result = body;
+    } catch (err) {
+      photo.status = "error";
+      photo.error = this._errorText(err);
+    }
+    if (this._photo === photo) this._renderPhoto();
+  }
+
+  _closePhoto() {
+    if (this._photo?.url) URL.revokeObjectURL(this._photo.url);
+    this._photo = null;
+    this._renderPhoto();
+  }
+
+  _photoInfo(result) {
+    const meter = result.meter_id ? this._meter(result.meter_id) : null;
+    const number = result.meter_number;
+    if (meter && result.match === "exact") {
+      return { cls: "good", text: this._t("photo_match_exact", { name: meter.name, number }) };
+    }
+    if (meter && ["partial", "fuzzy"].includes(result.match)) {
+      return { cls: "warn", text: this._t("photo_match_similar", { name: meter.name, number, stored: meter.number }) };
+    }
+    if (meter && result.match === "single") return { cls: "warn", text: this._t("photo_match_single") };
+    return { cls: "warn", text: number ? this._t("photo_match_none", { number }) : this._t("photo_no_number") };
+  }
+
+  _photoLastText(meterId) {
+    const ov = this._overview?.find((o) => o.meter.id === meterId);
+    if (!ov?.last_reading) return "";
+    return this._t("photo_last", {
+      value: `${this._num(ov.last_reading.value, 2)} ${ov.meter.unit}`,
+      date: this._date(ov.last_reading.date),
+    });
+  }
+
+  _renderPhoto() {
+    const host = this.shadowRoot?.querySelector(".modal-host");
+    if (!host) return;
+    const p = this._photo;
+    if (!p) {
+      host.innerHTML = "";
+      return;
+    }
+    let body;
+    if (p.status === "loading") {
+      body = `<div class="photo-status"><div class="spinner"></div>${esc(this._t("photo_loading"))}</div>
+        <div class="buttons end"><button type="button" class="flat" data-action="photo-close">${esc(this._t("cancel"))}</button></div>`;
+    } else if (p.status === "error") {
+      body = `<div class="notice bad">${esc(p.error)}</div>
+        <div class="buttons end"><button type="button" class="flat" data-action="photo-close">${esc(this._t("cancel"))}</button>
+        <button type="button" class="primary" data-action="photo">${esc(this._t("photo_retry"))}</button></div>`;
+    } else {
+      const r = p.result;
+      const info = this._photoInfo(r);
+      const offerNumber = r.meter_number && r.match !== "exact";
+      body = `<div class="notice ${info.cls}">${esc(info.text)}</div>
+        ${r.value === null ? `<div class="notice warn">${esc(this._t("photo_no_value"))}</div>` : ""}
+        <form data-form="photo" class="form-grid">
+          <label class="field wide"><span>${esc(this._t("meter"))}</span>
+            <select name="meter_id" data-bind="photoMeter" required>
+              <option value="">${esc(this._t("choose"))}</option>
+              ${this._data.meters
+                .map((m) => `<option value="${m.id}" ${m.id === r.meter_id ? "selected" : ""}>${esc(m.name)} (${esc(this._t(`type_${m.type}`))}${m.number ? `, ${esc(m.number)}` : ""})</option>`)
+                .join("")}
+            </select><small class="photo-last">${esc(this._photoLastText(r.meter_id))}</small></label>
+          <label class="field"><span>${esc(this._t("value"))}${r.unit ? ` (${esc(r.unit)})` : ""}</span>
+            <input type="text" name="value" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)*" autocomplete="off" required value="${r.value === null ? "" : esc(this._plain(r.value))}">
+            <small>${esc(this._t("photo_check"))}</small></label>
+          <label class="field"><span>${esc(this._t("date"))}</span><input type="date" name="date" required value="${esc(this._data.today)}"></label>
+          <label class="check wide"><input type="checkbox" name="reset"> ${esc(this._t("meter_replaced"))}</label>
+          ${offerNumber ? `<label class="check wide"><input type="checkbox" name="save_number" ${r.match === "none" || r.match === "single" ? "checked" : ""}> ${esc(this._t("photo_save_number", { number: r.meter_number }))}</label>` : ""}
+          <div class="buttons wide end"><button type="button" class="flat" data-action="photo-close">${esc(this._t("cancel"))}</button>
+            <button type="button" class="flat" data-action="photo">${esc(this._t("photo_retry"))}</button>
+            <button class="primary" type="submit">${esc(this._t("save"))}</button></div>
+        </form>`;
+    }
+    host.innerHTML = `<div class="modal-backdrop"><div class="modal card">
+      <div class="card-title">${esc(this._t("photo_title"))}</div>
+      <img class="photo-preview" src="${p.url}" alt="">
+      ${body}</div></div>`;
+  }
+
+  async _saveReading(payload) {
+    try {
+      await this._ws("reading/save", payload);
+      return true;
+    } catch (err) {
+      const forceable = ["value_too_low", "value_too_high"].includes(err.code);
+      if (!forceable || !confirm(this._t("force_question", { message: this._errorText(err) }))) {
+        this._toast(this._errorText(err), true);
+        return false;
+      }
+    }
+    try {
+      await this._ws("reading/save", { ...payload, force: true });
+      return true;
+    } catch (err) {
+      this._toast(this._errorText(err), true);
+      return false;
+    }
+  }
+
   _icon(type) {
     return `<ha-icon icon="${TYPE_ICON[type] || "mdi:counter"}" style="color:${TYPE_COLOR[type]}"></ha-icon>`;
   }
@@ -848,7 +1046,8 @@ class EnergyTrackerPanel extends HTMLElement {
   /* overview */
 
   _render_overview() {
-    return `<div class="grid">${this._overview.map((ov) => this._overviewCard(ov)).join("")}</div>`;
+    return `<div class="actions-row">${this._photoButton()}</div>
+      <div class="grid">${this._overview.map((ov) => this._overviewCard(ov)).join("")}</div>`;
   }
 
   _figure(label, value, sub = "") {
@@ -1115,7 +1314,7 @@ class EnergyTrackerPanel extends HTMLElement {
     const readings = this._data.readings.filter((r) => r.meter_id === s.meterId).sort((a, b) => (a.date + (a.reset ? 1 : 0) < b.date + (b.reset ? 1 : 0) ? -1 : 1));
     const editing = s.editReading ? readings.find((r) => r.id === s.editReading) : null;
     const u = esc(meter.unit);
-    let html = `<div class="card controls">${this._meterSelect()}</div>
+    let html = `<div class="card controls">${this._meterSelect()}${this._photoButton()}</div>
       <div class="card"><div class="card-title">${esc(editing ? this._t("edit") : this._t("add_reading"))}</div>
       <form data-form="reading" class="form-row">
         <label class="field"><span>${esc(this._t("date"))}</span><input type="date" name="date" required value="${esc(editing?.date || this._data.today)}"></label>
@@ -1309,7 +1508,7 @@ class EnergyTrackerPanel extends HTMLElement {
         <label class="field"><span>${esc(this._t("name"))}</span><input name="name" required maxlength="100" value="${esc(m?.name || "")}"></label>
         <label class="field"><span>${esc(this._t("meter_type"))}</span><select name="meter_type" data-bind="formType">${METER_TYPES.map((t) => `<option value="${t}" ${t === type ? "selected" : ""}>${esc(this._t(`type_${t}`))}</option>`).join("")}</select></label>
         <label class="field"><span>${esc(this._t("unit"))}</span><select name="unit">${UNITS.map((u) => `<option ${u === unit ? "selected" : ""}>${u}</option>`).join("")}</select></label>
-        <label class="field"><span>${esc(this._t("meter_number"))}</span><input name="number" value="${esc(m?.number || "")}"></label>
+        <label class="field"><span>${esc(this._t("meter_number"))}</span><input name="number" value="${esc(m?.number || "")}"><small>${esc(this._t("meter_number_hint"))}</small></label>
         <label class="field"><span>${esc(this._t("profile"))}</span><select name="profile">${PROFILES.map((p) => `<option value="${p}" ${p === (m?.profile || "auto") ? "selected" : ""}>${esc(this._t(`profile_${p}`))}</option>`).join("")}</select><small>${esc(this._t("profile_hint"))}</small></label>
         <label class="field"><span>${esc(this._t("annual_estimate", { unit }))}</span><input type="text" name="annual_estimate" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)*" autocomplete="off" value="${esc(m?.annual_estimate ?? "")}" placeholder="${def}"><small>${esc(this._t("annual_hint", { value: `${def} ${unit}` }))}</small></label>
         <div class="buttons wide"><button class="primary" type="submit">${esc(this._t("save"))}</button>
@@ -1393,6 +1592,12 @@ class EnergyTrackerPanel extends HTMLElement {
     const s = this._state;
     const action = el.dataset.action;
     switch (action) {
+      case "photo":
+        this.shadowRoot.querySelector(".photo-input").click();
+        break;
+      case "photo-close":
+        this._closePhoto();
+        break;
       case "tab":
         s.tab = el.dataset.tab;
         s.editReading = null;
@@ -1501,6 +1706,11 @@ class EnergyTrackerPanel extends HTMLElement {
     const bind = el?.dataset?.bind;
     if (!bind) return;
     const s = this._state;
+    if (bind === "photoMeter") {
+      const last = this.shadowRoot.querySelector(".photo-last");
+      if (last) last.textContent = this._photoLastText(el.value);
+      return;
+    }
     if (bind === "meterId") {
       s.meterId = el.value;
       s.editReading = null;
@@ -1540,18 +1750,29 @@ class EnergyTrackerPanel extends HTMLElement {
         note: data.note || "",
       };
       if (s.editReading) payload.reading_id = s.editReading;
-      try {
-        await this._ws("reading/save", payload);
-      } catch (err) {
-        if (["value_too_low", "value_too_high"].includes(err.code) && confirm(this._t("force_question", { message: this._errorText(err) }))) {
-          await this._mutate("reading/save", { ...payload, force: true });
-          s.editReading = null;
-        } else {
+      if (!(await this._saveReading(payload))) return;
+      s.editReading = null;
+      this._toast(this._t("saved"));
+      await this._reload();
+    } else if (kind === "photo") {
+      const payload = {
+        meter_id: data.meter_id,
+        date: data.date,
+        value: parseNum(data.value),
+        reset: form.elements.reset.checked,
+        note: "",
+      };
+      if (!(await this._saveReading(payload))) return;
+      const number = this._photo?.result?.meter_number;
+      if (form.elements.save_number?.checked && number) {
+        try {
+          await this._ws("meter/save", { meter_id: data.meter_id, number });
+        } catch (err) {
           this._toast(this._errorText(err), true);
         }
-        return;
       }
-      s.editReading = null;
+      s.meterId = data.meter_id;
+      this._closePhoto();
       this._toast(this._t("saved"));
       await this._reload();
     } else if (kind === "import") {
@@ -1766,6 +1987,23 @@ const STYLE = `
   td.actions button.icon { font-size:inherit; --mdc-icon-size:20px; }
   tr.editing td { background:var(--secondary-background-color); }
   details summary { cursor:pointer; font-weight:500; }
+  .actions-row { display:flex; justify-content:flex-end; margin-bottom:12px; }
+  button.with-icon { display:inline-flex; align-items:center; gap:8px; --mdc-icon-size:20px; }
+  .modal-backdrop { position:fixed; inset:0; z-index:15; background:rgba(0,0,0,.55); display:flex; align-items:center;
+    justify-content:center; padding:12px; box-sizing:border-box; }
+  .modal { width:min(100%, 560px); max-height:calc(100vh - 24px); overflow-y:auto; margin:0; }
+  .photo-preview { display:block; width:100%; max-height:38vh; object-fit:contain; border-radius:8px;
+    background:var(--secondary-background-color); margin-bottom:12px; }
+  .photo-status { display:flex; align-items:center; gap:12px; padding:12px 0; }
+  .spinner { width:22px; height:22px; border-radius:50%; border:3px solid var(--divider-color);
+    border-top-color:var(--primary-color); animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .notice { border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:14px; white-space:pre-line;
+    background:var(--secondary-background-color); }
+  .notice.good { background:rgba(67,160,71,.15); }
+  .notice.warn { background:rgba(251,140,0,.15); }
+  .notice.bad { background:rgba(219,68,55,.13); color:var(--error-color, #c62828); }
+  .buttons.end { justify-content:flex-end; flex-wrap:wrap; }
   .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(100px); opacity:0; transition:all .25s;
     background:#323232; color:#fff; padding:12px 20px; border-radius:8px; z-index:20; max-width:90vw; white-space:pre-line; }
   .toast.show { transform:translateX(-50%); opacity:1; }

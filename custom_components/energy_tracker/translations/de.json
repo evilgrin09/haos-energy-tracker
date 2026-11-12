@@ -9,7 +9,11 @@
         "description": "Erfasse Zählerstände für Strom, Gas und Wasser, werte deinen Verbrauch aus und erhalte eine Prognose deiner Jahresabrechnung.",
         "data": {
           "show_panel": "In der Seitenleiste anzeigen",
-          "panel_title": "Titel in der Seitenleiste"
+          "panel_title": "Titel in der Seitenleiste",
+          "ai_task_entity": "AI-Task-Entität für die Fotoerkennung"
+        },
+        "data_description": {
+          "ai_task_entity": "Liest Zählernummer und Zählerstand aus einem Foto. Leer = bevorzugte AI-Task-Entität von Home Assistant."
         }
       }
     }
@@ -20,7 +24,11 @@
         "title": "Energy Tracker Optionen",
         "data": {
           "show_panel": "In der Seitenleiste anzeigen",
-          "panel_title": "Titel in der Seitenleiste"
+          "panel_title": "Titel in der Seitenleiste",
+          "ai_task_entity": "AI-Task-Entität für die Fotoerkennung"
+        },
+        "data_description": {
+          "ai_task_entity": "Liest Zählernummer und Zählerstand aus einem Foto. Leer = bevorzugte AI-Task-Entität von Home Assistant."
         }
       }
     }

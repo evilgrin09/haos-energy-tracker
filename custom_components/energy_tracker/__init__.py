@@ -43,6 +43,7 @@ from .const import (
     SIGNAL_DATA_UPDATED,
     STATIC_URL,
 )
+from .photo import RecognizeView
 from .store import TrackerError, TrackerStore
 
 PLATFORMS = [Platform.SENSOR]
@@ -67,6 +68,7 @@ ADD_READING_SCHEMA = vol.Schema(
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the parts that live independent of the config entry."""
     websocket.async_register(hass)
+    hass.http.register_view(RecognizeView())
     await hass.http.async_register_static_paths([StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), False)])
 
     async def add_reading(call: ServiceCall) -> ServiceResponse:

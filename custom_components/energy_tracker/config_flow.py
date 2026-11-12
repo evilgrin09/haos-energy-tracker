@@ -11,9 +11,10 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 import voluptuous as vol
 
-from .const import CONF_PANEL_TITLE, CONF_SHOW_PANEL, DOMAIN, NAME
+from .const import CONF_AI_TASK_ENTITY, CONF_PANEL_TITLE, CONF_SHOW_PANEL, DOMAIN, NAME
 
 
 def _schema(defaults: dict[str, Any]) -> vol.Schema:
@@ -21,6 +22,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
         {
             vol.Required(CONF_SHOW_PANEL, default=defaults.get(CONF_SHOW_PANEL, True)): bool,
             vol.Required(CONF_PANEL_TITLE, default=defaults.get(CONF_PANEL_TITLE, NAME)): str,
+            vol.Optional(
+                CONF_AI_TASK_ENTITY,
+                description={"suggested_value": defaults.get(CONF_AI_TASK_ENTITY)},
+            ): selector.EntitySelector(selector.EntitySelectorConfig(domain="ai_task")),
         }
     )
 

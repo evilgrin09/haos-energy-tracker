@@ -4,7 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "energy_tracker"
 NAME = "Energy Tracker"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 STORAGE_KEY = f"{DOMAIN}.data"
 STORAGE_VERSION = 1
@@ -16,6 +16,7 @@ STATIC_URL = f"/{DOMAIN}_static"
 
 CONF_SHOW_PANEL = "show_panel"
 CONF_PANEL_TITLE = "panel_title"
+CONF_AI_TASK_ENTITY = "ai_task_entity"
 
 METER_TYPES = ["electricity", "gas", "water", "heat", "oil", "other"]
 PROFILES = ["auto", "flat", "heating", "electricity"]

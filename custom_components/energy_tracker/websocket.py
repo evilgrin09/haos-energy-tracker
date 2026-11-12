@@ -97,6 +97,7 @@ def ws_data(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> di
         "readings": sorted(store.readings.values(), key=lambda r: r["date"]),
         "contracts": list(store.contracts.values()),
         "currency": hass.config.currency,
+        "photo_available": "ai_task" in hass.config.components,
         "today": dt_util.now().date().isoformat(),
     }
 

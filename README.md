@@ -10,6 +10,7 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
 - **Zählerstände erfassen** über das Seitenleisten-Panel, per Service (`energy_tracker.add_reading`, nutzbar in Automationen, Skripten und Sprachassistenten) oder per CSV-Import.
   - Plausibilitätsprüfung: Ein Stand darf nicht kleiner als der vorherige sein.
   - **Zählerwechsel**: Den Anfangsstand des neuen Zählers als „Zählerwechsel“ markieren.
+- **Zählerstand per Foto**: Zähler fotografieren, die Integration liest Zählernummer und Zählerstand aus dem Bild und ordnet das Foto über die Zählernummer automatisch dem richtigen Zähler zu (siehe [Zählerstand per Foto](#zählerstand-per-foto)).
 - **Auswertung** mit der Auflösung **Tag / Woche / Monat / Jahr** und freier Navigation durch die Zeiträume.
   - **Verbrauchsdiagramm** (Balken) und **kumulierter Verlauf** (Linie)
   - **Vergleichsdiagramme**: Vorperiode (z. B. Vormonat) oder Vorjahreszeitraum
@@ -62,6 +63,23 @@ Nach der Einrichtung erscheint in der Seitenleiste **Energy Tracker**. Titel und
    ```
 3. **Vertrag** anlegen. Mit Preisen und Abschlag zeigen Übersicht und Vertragsseite die erwartete Nachzahlung oder Erstattung.
 
+### Zählerstand per Foto
+
+In der Übersicht und unter „Zählerstände“ gibt es den Knopf **Zählerstand per Foto**. Auf dem Handy öffnet er direkt die Kamera, am PC die Dateiauswahl.
+
+1. Zähler so fotografieren, dass **Zählerstand und Zählernummer** lesbar sind.
+2. Die Integration erkennt beides und sucht den Zähler mit dieser Nummer. Leerzeichen, Bindestriche und Groß-/Kleinschreibung spielen keine Rolle. Ist nur ein Teil der Nummer zu sehen oder ein Zeichen falsch gelesen, wird der ähnlichste Zähler vorgeschlagen und als „bitte prüfen“ markiert.
+3. Im Dialog stehen der zugeordnete Zähler, der erkannte Wert und der letzte Zählerstand zum Vergleich. Du kannst alles korrigieren und speicherst erst dann. Es wird nie ungefragt gespeichert.
+4. Passt die Nummer zu keinem Zähler, wählst du den Zähler aus und kannst die erkannte Nummer gleich bei ihm hinterlegen. Ab dann klappt die Zuordnung automatisch.
+
+**Voraussetzungen**
+
+- Bei jedem Zähler ist die **Zählernummer** eingetragen (Reiter „Zähler“).
+- In Home Assistant ist **AI Task** mit einem KI-Anbieter eingerichtet, der Bilder verarbeiten kann (z. B. OpenAI, Google Gemini, Anthropic oder lokal über Ollama mit einem Vision-Modell). AI Task mit Bild-Anhängen gibt es erst in neueren Home-Assistant-Versionen (getestet mit 2026.2).
+- Welche AI-Task-Entität genutzt wird, legst du in den Optionen der Integration fest. Bleibt das Feld leer, gilt die in Home Assistant bevorzugte AI-Task-Entität.
+
+**Datenschutz und Kosten:** Das Foto wird im Browser verkleinert, an Home Assistant geschickt und von dort an den gewählten KI-Anbieter weitergegeben. Bei Cloud-Anbietern verlässt das Bild also dein Netz und die Auswertung kann etwas kosten. Die Integration löscht das Foto direkt nach der Auswertung wieder aus dem Medienverzeichnis.
+
 ### Zählerstand per Automation oder Sprachassistent
 
 ```yaml
@@ -97,7 +115,7 @@ Die Rechenlogik liegt in `calc.py` und hat keine Abhängigkeit von Home Assistan
 
 - Preisänderungen innerhalb eines Vertrags (mehrere Preisstufen)
 - Import der interpolierten Werte in die HA-Langzeitstatistik (Energie-Dashboard)
-- Zählerstand per Foto/OCR
+- Foto-Erkennung auch als Aktion für Automationen (z. B. mit einer Kamera am Zähler)
 - Erinnerung an die Ablesung
 - Einspeisezähler (PV) und Zwei-Tarif-Zähler (HT/NT)
 
