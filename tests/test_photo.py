@@ -1,9 +1,12 @@
 """Tests for reading meters from photos."""
 
+from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import homeassistant.components as ha_components
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
@@ -17,6 +20,24 @@ from custom_components.energy_tracker.photo import (
     normalize_number,
     parse_reading_value,
 )
+
+
+@contextmanager
+def _fake_ai_task(async_generate_data: AsyncMock):
+    """Replace the ai_task component with a fake module.
+
+    The real module cannot be imported in a minimal test environment (it needs
+    the dependencies of conversation, e.g. hassil), and the integration only
+    uses ``ai_task.async_generate_data``.
+    """
+    fake = ModuleType("homeassistant.components.ai_task")
+    fake.async_generate_data = async_generate_data
+    with (
+        patch.dict(sys.modules, {"homeassistant.components.ai_task": fake}),
+        patch.object(ha_components, "ai_task", fake, create=True),
+    ):
+        yield fake
+
 
 METERS = [
     {"id": "el", "name": "Strom", "type": "electricity", "number": "1EMH00 1234 5678"},
@@ -114,7 +135,7 @@ async def test_recognize_view(hass: HomeAssistant, client, hass_ws_client) -> No
         seen["file_existed"] = (tmp_path / DOMAIN / "tmp" / media_id.rsplit("/", 1)[1]).is_file()
         return SimpleNamespace(data={"meter_number": "1EMH00 1234 5678", "value": "001234,5", "unit": "kWh"})
 
-    with patch("homeassistant.components.ai_task.async_generate_data", side_effect=generate):
+    with _fake_ai_task(AsyncMock(side_effect=generate)):
         resp = await http.post(
             f"/api/{DOMAIN}/recognize", data=b"\xff\xd8fake", headers={"Content-Type": "image/jpeg"}
         )
@@ -210,10 +231,7 @@ async def test_recognize_errors(hass: HomeAssistant, client) -> None:
     resp = await http.post(url, data=b"x", headers={"Content-Type": "text/plain"})
     assert (await resp.json())["code"] == "invalid_image"
 
-    with patch(
-        "homeassistant.components.ai_task.async_generate_data",
-        AsyncMock(side_effect=HomeAssistantError("AI Task entity ai_task.test not found")),
-    ):
+    with _fake_ai_task(AsyncMock(side_effect=HomeAssistantError("AI Task entity ai_task.test not found"))):
         resp = await http.post(url, data=b"x", headers={"Content-Type": "image/png"})
     assert resp.status == 400
     assert (await resp.json())["code"] == "no_ai_entity"
