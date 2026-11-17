@@ -10,7 +10,16 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
-from .calc import ConsumptionModel, Tariff, build_model, build_tariff, parse_date
+from .calc import (
+    DEFAULT_BILLING_DAY,
+    DEFAULT_BILLING_MONTH,
+    FORECAST_LAST_YEAR,
+    ConsumptionModel,
+    Tariff,
+    build_model,
+    build_tariff,
+    parse_date,
+)
 from .const import SIGNAL_DATA_UPDATED, STORAGE_KEY, STORAGE_VERSION
 
 
@@ -23,7 +32,18 @@ class TrackerError(Exception):
         self.code = code
 
 
-METER_FIELDS = ("name", "type", "unit", "profile", "annual_estimate", "number", "icon")
+METER_FIELDS = (
+    "name",
+    "type",
+    "unit",
+    "profile",
+    "annual_estimate",
+    "number",
+    "icon",
+    "billing_day",
+    "billing_month",
+    "forecast_method",
+)
 READING_FIELDS = ("meter_id", "date", "value", "reset", "note")
 CONTRACT_FIELDS = (
     "meter_id",
@@ -32,14 +52,65 @@ CONTRACT_FIELDS = (
     "customer_number",
     "start_date",
     "end_date",
-    "billing_months",
     "unit_price",
     "base_price",
     "advance_payment",
     "conversion_factor",
+    "payments_per_year",
+    "payment_day",
+    "first_payment",
+    "advance_changes",
     "notice_period",
     "note",
 )
+BILL_FIELDS = (
+    "meter_id",
+    "start_date",
+    "end_date",
+    "consumption",
+    "consumption_unit",
+    "total_cost",
+    "advances_paid",
+    "balance",
+    "new_advance",
+    "new_advance_from",
+    "note",
+)
+
+METER_DEFAULTS = {
+    "profile": "auto",
+    "billing_day": DEFAULT_BILLING_DAY,
+    "billing_month": DEFAULT_BILLING_MONTH,
+    "forecast_method": FORECAST_LAST_YEAR,
+}
+
+
+class _MigratingStore(Store[dict[str, Any]]):
+    """Store with migration of older data versions."""
+
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        return migrate(old_major_version, old_data)
+
+
+def migrate(old_version: int, data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate stored data to the current version.
+
+    Version 2: billing date per meter (default 30.09.), forecast method,
+    payment details per contract, bills.  Contracts keep all their values.
+    """
+    if old_version < 2:
+        for meter in data.get("meters", []):
+            for key, value in METER_DEFAULTS.items():
+                meter.setdefault(key, value)
+        for contract in data.get("contracts", []):
+            contract.setdefault("payments_per_year", 12)
+            contract.setdefault("payment_day", int(str(contract["start_date"])[8:10]))
+            contract.setdefault("first_payment", None)
+            contract.setdefault("advance_changes", [])
+        data.setdefault("bills", [])
+    return data
 
 
 def _new_id() -> str:
@@ -52,10 +123,11 @@ class TrackerStore:
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the store."""
         self.hass = hass
-        self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._store: Store[dict[str, Any]] = _MigratingStore(hass, STORAGE_VERSION, STORAGE_KEY)
         self.meters: dict[str, dict[str, Any]] = {}
         self.readings: dict[str, dict[str, Any]] = {}
         self.contracts: dict[str, dict[str, Any]] = {}
+        self.bills: dict[str, dict[str, Any]] = {}
         self._models: dict[str, ConsumptionModel] = {}
 
     async def async_load(self) -> None:
@@ -64,6 +136,7 @@ class TrackerStore:
         self.meters = {m["id"]: m for m in data.get("meters", [])}
         self.readings = {r["id"]: r for r in data.get("readings", [])}
         self.contracts = {c["id"]: c for c in data.get("contracts", [])}
+        self.bills = {b["id"]: b for b in data.get("bills", [])}
 
     @callback
     def _data_to_save(self) -> dict[str, Any]:
@@ -71,6 +144,7 @@ class TrackerStore:
             "meters": list(self.meters.values()),
             "readings": list(self.readings.values()),
             "contracts": list(self.contracts.values()),
+            "bills": list(self.bills.values()),
         }
 
     @callback
@@ -103,7 +177,9 @@ class TrackerStore:
         for key in METER_FIELDS:
             if key in data:
                 meter[key] = data[key]
-        meter.setdefault("profile", "auto")
+        for key, value in METER_DEFAULTS.items():
+            if meter.get(key) is None:
+                meter[key] = value
         self._changed()
         return meter
 
@@ -115,6 +191,7 @@ class TrackerStore:
         del self.meters[meter_id]
         self.readings = {k: v for k, v in self.readings.items() if v["meter_id"] != meter_id}
         self.contracts = {k: v for k, v in self.contracts.items() if v["meter_id"] != meter_id}
+        self.bills = {k: v for k, v in self.bills.items() if v["meter_id"] != meter_id}
         self._changed()
 
     @callback
@@ -287,6 +364,13 @@ class TrackerStore:
         start = parse_date(merged["start_date"])
         if merged.get("end_date") and parse_date(merged["end_date"]) < start:
             raise TrackerError("invalid_dates", "End date is before start date")
+        merged.setdefault("payments_per_year", 12)
+        merged.setdefault("payment_day", start.day)
+        merged.setdefault("advance_changes", [])
+        merged["advance_changes"] = sorted(
+            ({"date": str(c["date"])[:10], "amount": float(c["amount"])} for c in merged["advance_changes"]),
+            key=lambda c: c["date"],
+        )
         contract.update(merged)
         self.contracts[contract["id"]] = contract
         self._changed()
@@ -297,6 +381,43 @@ class TrackerStore:
         """Delete a contract."""
         if self.contracts.pop(contract_id, None) is None:
             raise TrackerError("not_found", f"Contract {contract_id} not found")
+        self._changed()
+
+    # ------------------------------------------------------------------- bills
+
+    @callback
+    def meter_bills(self, meter_id: str) -> list[dict[str, Any]]:
+        """Return the bills of a meter sorted by end date."""
+        return sorted(
+            (b for b in self.bills.values() if b["meter_id"] == meter_id),
+            key=lambda b: (b["end_date"], b["start_date"]),
+        )
+
+    @callback
+    def save_bill(self, data: dict[str, Any], bill_id: str | None = None) -> dict[str, Any]:
+        """Create or update a bill of the utility."""
+        if bill_id:
+            if bill_id not in self.bills:
+                raise TrackerError("not_found", f"Bill {bill_id} not found")
+            bill = self.bills[bill_id]
+        else:
+            bill = {"id": _new_id()}
+        merged = {**bill, **{k: data[k] for k in BILL_FIELDS if k in data}}
+        if merged.get("meter_id") not in self.meters:
+            raise TrackerError("not_found", f"Meter {merged.get('meter_id')} not found")
+        if parse_date(merged["end_date"]) < parse_date(merged["start_date"]):
+            raise TrackerError("invalid_dates", "End date is before start date")
+        merged.setdefault("consumption_unit", "meter")
+        bill.update(merged)
+        self.bills[bill["id"]] = bill
+        self._changed()
+        return bill
+
+    @callback
+    def delete_bill(self, bill_id: str) -> None:
+        """Delete a bill."""
+        if self.bills.pop(bill_id, None) is None:
+            raise TrackerError("not_found", f"Bill {bill_id} not found")
         self._changed()
 
     # ------------------------------------------------------------ calculations
@@ -310,8 +431,24 @@ class TrackerStore:
 
     @callback
     def tariffs(self, meter_id: str) -> list[Tariff]:
-        """Return the tariffs of a meter."""
-        return [build_tariff(c) for c in self.meter_contracts(meter_id)]
+        """Return the tariffs of a meter.
+
+        A "new advance from date" of a bill counts as advance change of the
+        contract running on that date.
+        """
+        contracts = self.meter_contracts(meter_id)
+        changes = [
+            (parse_date(b["new_advance_from"]), float(b["new_advance"]))
+            for b in self.meter_bills(meter_id)
+            if b.get("new_advance") is not None and b.get("new_advance_from")
+        ]
+        tariffs = []
+        for contract in contracts:
+            start = parse_date(contract["start_date"])
+            end = parse_date(contract["end_date"]) if contract.get("end_date") else None
+            own = [(d, a) for d, a in changes if start <= d and (end is None or d <= end)]
+            tariffs.append(build_tariff(contract, own))
+        return tariffs
 
     @callback
     def active_contract(self, meter_id: str, today: date) -> dict[str, Any] | None:

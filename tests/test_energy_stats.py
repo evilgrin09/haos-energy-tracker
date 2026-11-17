@@ -290,3 +290,23 @@ async def test_meter_deleted(recorder_mock, hass: HomeAssistant, store) -> None:
     await _sync(hass)
     assert await _rows(hass, consumption_statistic_id(meter["id"])) == []
     assert await _rows(hass, cost_statistic_id(meter["id"])) == []
+
+
+async def test_cost_rewritten_for_historic_contract(recorder_mock, hass: HomeAssistant, store) -> None:
+    """Adding an old contract later fills in the costs of the past."""
+    meter = _meter(store)
+    store.save_contract({"meter_id": meter["id"], "start_date": "2025-06-28", "unit_price": 1.0})
+    await _sync(hass)
+    rows = await _rows(hass, cost_statistic_id(meter["id"]))
+    assert rows[7 * 24 - 1]["sum"] == pytest.approx(0.0)  # until 27.06. no tariff
+
+    store.save_contract(
+        {"meter_id": meter["id"], "start_date": "2025-01-01", "end_date": "2025-06-27", "unit_price": 0.5}
+    )
+    await _sync(hass)
+    rows = await _rows(hass, cost_statistic_id(meter["id"]))
+    assert len(rows) == 254
+    assert rows[0]["state"] == pytest.approx(0.5)
+    assert rows[7 * 24 - 1]["sum"] == pytest.approx(7 * 24 * 0.5)
+    assert rows[-1]["sum"] == pytest.approx(7 * 24 * 0.5 + (254 - 7 * 24) * 1.0)
+    _assert_continuous(rows)

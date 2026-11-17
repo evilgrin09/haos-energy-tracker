@@ -58,6 +58,9 @@
       },
       "billing_balance": {
         "name": "Expected refund (+) / additional payment (−)"
+      },
+      "last_bill": {
+        "name": "Last bill (refund + / additional payment −)"
       }
     }
   },

@@ -24,8 +24,10 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
   - Vor der ersten und nach der letzten Ablesung rechnet die Integration mit dem **Durchschnittsverbrauch**.
   - Solange weniger als zwei Ablesungen vorliegen, gilt ein **Referenz-Jahresverbrauch**. Den kannst du selbst setzen, sonst nimmt die Integration einen typischen Wert, z. B. 2.500 kWh Strom. Bei wenigen Messtagen werden Messung und Referenzwert gemittelt.
   - In den Diagrammen ist erkennbar, was **gemessen** (voll), **geschätzt** (schraffiert) und **Prognose** (hell) ist.
-- **Verträge**: Anbieter, Tarif, Kundennummer, Laufzeit (Beginn/Ende), Kündigungsfrist, Abrechnungszeitraum (Monate), Arbeitspreis, Grundpreis, monatlicher Abschlag und Umrechnungsfaktor (Gas m³ → kWh).
-- **Abrechnungsprognose** je Abrechnungszeitraum: erwartete Kosten (Arbeits- und Grundpreis), Summe der Abschläge, bisher gezahlt, **erwartete Nachzahlung oder Erstattung** und ein **empfohlener Abschlag**. Frühere Abrechnungszeiträume kannst du ebenfalls ansehen.
+- **Abrechnungsjahr pro Zähler**: Abrechnungsstichtag je Zähler (Standard 30.09.). Ein Abrechnungsjahr läuft vom Tag nach dem Stichtag bis zum Stichtag, z. B. „2025/26“ = 01.10.2025–30.09.2026.
+- **Verträge/Tarife**, auch rückwirkend und lückenlos hintereinander: Anbieter, Tarif, Kundennummer, Laufzeit, Kündigungsfrist, Arbeitspreis, Grundpreis, Umrechnungsfaktor (Gas m³ → kWh), Abschlag mit 11 oder 12 Zahlungen pro Jahr, Fälligkeitstag, erster Zahlung und **Abschlagsänderungen** („ab Datum X: Y €“).
+- **Abrechnungsprognose** je Abrechnungsjahr: Zählerstand am Stichtag (interpoliert oder hochgerechnet), Verbrauch, Kosten (bei Preisänderung oder Anbieterwechsel tageweise anteilig), Abschläge, bisher gezahlt, **erwartete Nachzahlung oder Erstattung** und **empfohlener Abschlag**.
+- **Echte Abrechnungen erfassen** und mit der eigenen Berechnung vergleichen (Verbrauch, Kosten, Abschläge, Ergebnis, Abweichung in € und %).
 - **Sensoren** pro Zähler (ein Gerät je Zähler) für Dashboards und Automationen:
 
 | Sensor | Beschreibung |
@@ -35,8 +37,11 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
 | Verbrauch aktuelles Jahr | bis heute |
 | Prognose aktuelles Jahr | Hochrechnung für das Kalenderjahr inkl. Kosten |
 | Durchschnitt pro Tag | inkl. Datenqualität |
-| Prognose Kosten Abrechnungszeitraum | nur mit Vertrag |
-| Erwartete Erstattung (+) / Nachzahlung (−) | nur mit Vertrag; Attribute: Abschläge, empfohlener Abschlag usw. |
+| Prognose Kosten Abrechnungszeitraum | aktuelles Abrechnungsjahr; nur wenn ein Tarif im Zeitraum liegt |
+| Erwartete Erstattung (+) / Nachzahlung (−) | aktuelles Abrechnungsjahr; Attribute u. a. `billing_year`, Zählerstände, Abschläge, empfohlener Abschlag |
+| Letzte Abrechnung (Erstattung + / Nachzahlung −) | Ergebnis der zuletzt erfassten Abrechnung; Attribute: Zeitraum, Abweichung zur eigenen Berechnung |
+
+Kosten-Attribute haben zusätzlich `cost_coverage`: der Anteil der Tage (in %), für die ein Tarif erfasst ist. Unter 100 sind die Kosten unvollständig.
 
 ## Installation
 
@@ -59,14 +64,37 @@ Wenn du die Integration entfernst, werden die gespeicherten Zähler, Zählerstä
 
 Nach der Einrichtung erscheint in der Seitenleiste **Energy Tracker**. Titel und Sichtbarkeit änderst du in den Optionen der Integration.
 
-1. **Zähler** anlegen. Optional: Verbrauchsprofil und Referenz-Jahresverbrauch.
+1. **Zähler** anlegen. Optional: Verbrauchsprofil, Referenz-Jahresverbrauch, Abrechnungsstichtag und Prognosemethode.
 2. **Zählerstände** erfassen, am besten mit einem Anfangsstand zum Vertragsbeginn. Historische Werte lassen sich per CSV importieren (Reiter „Zählerstände“ → „Import / Export“), als Datei oder über das Textfeld:
    ```
    2025-01-01;12345,6
    01.02.2025 18:30;12560,1
    15.03.2025;0;wechsel
    ```
-3. **Vertrag** anlegen. Mit Preisen und Abschlag zeigen Übersicht und Vertragsseite die erwartete Nachzahlung oder Erstattung.
+3. **Vertrag** anlegen (Reiter „Abrechnung“). Mit Preisen und Abschlag zeigen Übersicht und Abrechnungsseite die erwartete Nachzahlung oder Erstattung.
+
+### Abrechnung
+
+Der Reiter **Abrechnung** zeigt pro Zähler:
+
+- **Das Abrechnungsjahr** mit Blättern durch alle Jahre seit der ersten Ablesung:
+  - Zählerstand zu Beginn und am Stichtag. Liegt der Stichtag zwischen zwei Ablesungen, wird interpoliert, so wie der Versorger hochrechnet: Ablesung am 07.09., Stichtag 30.09. Nach der letzten Ablesung gilt die Prognose.
+  - Verbrauch (gemessen, geschätzt, Prognose), Arbeitspreis, Grundpreis, Gesamtkosten, Abschläge, bisher gezahlt, Ergebnis und empfohlener Abschlag.
+  - Bei mehreren Tarifen im Jahr (Preisänderung, Anbieterwechsel) eine Aufteilung nach Tarif. Der Arbeitspreis gilt für den Verbrauch der jeweiligen Tage, der Grundpreis zeitanteilig.
+  - Die Liste der einzelnen Abschläge mit Datum, Betrag und „bezahlt/offen“.
+  - Ist für das Jahr eine Abrechnung erfasst: **Eigene Berechnung vs. Abrechnung**.
+- **Hinweise zu fehlenden Tarifen**: Lücken zwischen Verträgen, die Zeit vor dem ersten Vertrag und abgelaufene Verträge. Tage ohne Tarif haben keine Kosten. Die Abdeckung wird überall angezeigt.
+- **Tarife & Verträge**: Verträge dürfen in der Vergangenheit liegen. Trägst du ältere Verträge nach, werden Kosten, Prognose und die Kostenstatistik im Energie-Dashboard rückwirkend neu berechnet.
+- **Abrechnungen des Versorgers**: Zeitraum, abgerechneter Verbrauch (in Zählereinheit oder Abrechnungseinheit, z. B. kWh bei Gas), Gesamtkosten, gezahlte Abschläge, Ergebnis (leer = Abschläge − Kosten), neuer Abschlag ab Datum und Notiz.
+
+**Abschläge**
+
+- Pro Vertrag: Betrag, Anzahl pro Jahr (12 oder 11), Fälligkeitstag und optional das Datum der ersten Zahlung (Standard: erster Fälligkeitstag ab Vertragsbeginn).
+- Bei 11 Abschlägen gibt es im Monat des Stichtags keine Zahlung.
+- **Abschlagsänderungen** („ab 01.03.2026: 95 €“) trägst du beim Vertrag ein.
+- Ein **neuer Abschlag aus einer erfassten Abrechnung** wird automatisch ab dem angegebenen Datum übernommen. Steht für denselben Tag auch eine Änderung beim Vertrag, gilt die vom Vertrag.
+
+In der **Auswertung** gibt es zusätzlich die Auflösung **Abrechnungsjahr**: die Monate eines Abrechnungsjahres (z. B. 2025/26), auf Wunsch mit dem Vorjahreszeitraum zum Vergleich.
 
 ### Daten aus der iOS-App Energy Tracker übernehmen
 
@@ -182,11 +210,16 @@ data:
 
 - Ein Zählerstand gilt als Stand **am Ende des Ablesetags**.
 - Der Verbrauch zwischen zwei Ständen wird nach dem Monatsfaktor des Verbrauchsprofils auf die Tage verteilt.
-- Die **Jahresrate** (Hochrechnung auf 12 Monate) ergibt sich aus den Messungen der letzten 2 Jahre. Bei weniger als einem Jahr Messdaten wird sie mit 30 Tagen Gewicht mit dem Referenzwert gemittelt.
+- Die **Jahresrate** (Hochrechnung auf 12 Monate) ist die Grundlage aller Schätzungen und Prognosen. Pro Zähler stehen zwei Methoden zur Wahl:
+  - **Letzte 365 Tage** (Standard): gemessener Verbrauch der 365 Tage bis zur letzten Ablesung, saisonal gewichtet. Reagiert schnell auf ein geändertes Verbrauchsverhalten.
+  - **Durchschnitt der letzten 2 Jahre** (bisherige Methode): gleicht einzelne Ausreißerjahre stärker aus.
+  - Bei weniger als einem Jahr Messdaten wird die Rate mit 30 Tagen Gewicht mit dem Referenzwert gemittelt.
 - Tage ohne Messung: Jahresrate × Profilgewicht des Tages. Tage nach heute zählen als Prognose.
 - Kosten pro Tag: Verbrauch × Umrechnungsfaktor × Arbeitspreis + Grundpreis × 12 / 365.
-- Abschläge: ein Abschlag pro Monat des Abrechnungszeitraums, fällig jeweils am Monatsbeginn.
-- Saldo = Summe der Abschläge − prognostizierte Kosten. Ein positiver Wert bedeutet Erstattung, ein negativer Nachzahlung.
+- Gelten an einem Tag mehrere Verträge, zählt der mit dem spätesten Beginn.
+- Abschläge: monatlich am Fälligkeitstag (bei Tag 31 am Monatsende), Betrag laut Abschlagsänderungen. Gezählt werden alle Zahlungen, deren Datum im Abrechnungsjahr liegt.
+- Saldo = Summe der Abschläge − Kosten. Ein positiver Wert bedeutet Erstattung, ein negativer Nachzahlung.
+- Empfohlener Abschlag = Kosten des ganzen Abrechnungsjahres ÷ Anzahl Abschläge pro Jahr. Tage ohne Tarif werden dafür mit dem zeitlich nächsten Tarif gerechnet.
 - Alle Preise sind Bruttopreise (inkl. MwSt.).
 
 ## Entwicklung
@@ -200,7 +233,7 @@ Die Rechenlogik liegt in `calc.py` und hat keine Abhängigkeit von Home Assistan
 
 ## Ideen für später
 
-- Preisänderungen innerhalb eines Vertrags (mehrere Preisstufen)
+- Saisonprofil aus den eigenen Messdaten lernen statt eines Standardprofils
 - Foto-Erkennung auch als Aktion für Automationen (z. B. mit einer Kamera am Zähler)
 - Erinnerung an die Ablesung
 - Einspeisezähler (PV) und Zwei-Tarif-Zähler (HT/NT)

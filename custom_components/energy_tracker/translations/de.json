@@ -58,6 +58,9 @@
       },
       "billing_balance": {
         "name": "Erwartete Erstattung (+) / Nachzahlung (−)"
+      },
+      "last_bill": {
+        "name": "Letzte Abrechnung (Erstattung + / Nachzahlung −)"
       }
     }
   },

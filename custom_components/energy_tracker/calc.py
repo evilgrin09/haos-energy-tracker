@@ -23,6 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from itertools import pairwise
+import math
 from typing import Any
 
 MEASURED = "measured"
@@ -93,6 +94,15 @@ PRIOR_DAYS = 30
 # Measured data older than this (relative to the last reading) is ignored when
 # calculating the average consumption rate.
 RATE_WINDOW_DAYS = 730
+# Forecast methods
+FORECAST_LAST_YEAR = "last_year"  # measured consumption of the last 365 days
+FORECAST_AVERAGE = "average"  # average of the measurements of the last 2 years
+FORECAST_METHODS = (FORECAST_LAST_YEAR, FORECAST_AVERAGE)
+LAST_YEAR_DAYS = 365
+
+# Default billing date ("Abrechnungsstichtag")
+DEFAULT_BILLING_DAY = 30
+DEFAULT_BILLING_MONTH = 9
 
 
 def resolve_profile(meter_type: str, profile: str | None) -> tuple[float, ...]:
@@ -164,6 +174,7 @@ class ConsumptionModel:
     readings: list[Reading]
     factors: tuple[float, ...] = PROFILES["flat"]
     fallback_annual: float = 0.0
+    method: str = FORECAST_LAST_YEAR
     intervals: list[Interval] = field(init=False, default_factory=list)
     measured: dict[date, float] = field(init=False, default_factory=dict)
     annual_rate: float = field(init=False, default=0.0)
@@ -182,29 +193,66 @@ class ConsumptionModel:
         self._calculate_rate()
 
     def _calculate_rate(self) -> None:
-        """Calculate the annualised consumption rate used for estimates."""
+        """Calculate the annualised consumption rate used for estimates.
+
+        ``last_year``: measured consumption of the 365 days up to the last
+        reading, divided by the profile weight of these days (seasonally
+        weighted, so an incomplete year is extrapolated correctly).
+        ``average``: all intervals of the last two years.
+        """
         if not self.intervals:
             self.annual_rate = self.fallback_annual
             return
         last = self.intervals[-1].end
-        window_start = last - timedelta(days=RATE_WINDOW_DAYS)
         delta = 0.0
         weight = 0.0
         days = 0
-        for interval in self.intervals:
-            if interval.end <= window_start:
-                continue
-            delta += interval.delta
-            for d in daterange(interval.start + timedelta(days=1), interval.end):
-                weight += day_weight(d, self.factors)
-                days += 1
+        if self.method == FORECAST_AVERAGE:
+            window_start = last - timedelta(days=RATE_WINDOW_DAYS)
+            for interval in self.intervals:
+                if interval.end <= window_start:
+                    continue
+                delta += interval.delta
+                for d in daterange(interval.start + timedelta(days=1), interval.end):
+                    weight += day_weight(d, self.factors)
+                    days += 1
+            few_days = days < 365
+        else:
+            window_start = last - timedelta(days=LAST_YEAR_DAYS - 1)
+            for d, value in self.measured.items():
+                if window_start <= d <= last:
+                    delta += value
+                    weight += day_weight(d, self.factors)
+                    days += 1
+            few_days = self.measured_days < 365
         if weight <= 0:
             self.annual_rate = self.fallback_annual
             return
         measured_rate = delta / weight
         self.measured_annual_rate = measured_rate
-        prior = PRIOR_DAYS if (self.fallback_annual > 0 and days < 365) else 0
+        prior = PRIOR_DAYS if (self.fallback_annual > 0 and few_days) else 0
         self.annual_rate = (measured_rate * days + self.fallback_annual * prior) / (days + prior)
+
+    def reading_at(self, day: date, today: date) -> float | None:
+        """Meter value at the end of ``day``, interpolated between readings.
+
+        Uses the daily values (seasonal profile), the same way a utility
+        extrapolates a reading to the billing date.
+        """
+        if not self.readings:
+            return None
+        base = None
+        for reading in self.readings:
+            if reading.day <= day:
+                base = reading
+        if base is not None:
+            return base.value + math.fsum(
+                self.day(d, today)[0] for d in daterange(base.day + timedelta(days=1), day)
+            )
+        first = self.readings[0]
+        return first.value - math.fsum(
+            self.day(d, today)[0] for d in daterange(day + timedelta(days=1), first.day)
+        )
 
     @property
     def first_day(self) -> date | None:
@@ -286,9 +334,14 @@ class Tariff:
     end: date | None
     unit_price: float = 0.0  # currency per billing unit
     base_price: float = 0.0  # currency per month
-    advance_payment: float = 0.0  # currency per month
+    advance_payment: float = 0.0  # currency per payment
     conversion_factor: float = 1.0  # billing units per meter unit
-    billing_months: int = 12
+    payments_per_year: int = 12  # 11: no payment in the month of the billing date
+    payment_day: int = 1
+    first_payment: date | None = None
+    advance_changes: list[tuple[date, float]] = field(default_factory=list)
+    provider: str = ""
+    tariff: str = ""
 
     def covers(self, d: date) -> bool:
         """Return True if the tariff is valid on ``d``."""
@@ -297,6 +350,14 @@ class Tariff:
     def day_cost(self, consumption: float) -> float:
         """Cost of one day with the given consumption (incl. base price)."""
         return consumption * self.conversion_factor * self.unit_price + self.base_price * 12 / 365
+
+    def advance_at(self, d: date) -> float:
+        """Advance payment amount valid on ``d``."""
+        amount = self.advance_payment
+        for since, value in sorted(self.advance_changes):
+            if since <= d:
+                amount = value
+        return amount
 
 
 def find_tariff(tariffs: list[Tariff], d: date) -> Tariff | None:
@@ -308,6 +369,21 @@ def find_tariff(tariffs: list[Tariff], d: date) -> Tariff | None:
     return match
 
 
+def nearest_tariff(tariffs: list[Tariff], d: date) -> Tariff | None:
+    """Return the tariff valid on ``d`` or the one closest in time."""
+    if not tariffs:
+        return None
+    if tariff := find_tariff(tariffs, d):
+        return tariff
+
+    def distance(tariff: Tariff) -> int:
+        if d < tariff.start:
+            return (tariff.start - d).days
+        return (d - tariff.end).days if tariff.end else 0
+
+    return min(tariffs, key=distance)
+
+
 def aggregate(
     model: ConsumptionModel,
     start: date,
@@ -316,7 +392,10 @@ def aggregate(
     today: date,
     tariffs: list[Tariff] | None = None,
 ) -> list[dict[str, Any]]:
-    """Aggregate daily consumption into buckets of the given granularity."""
+    """Aggregate daily consumption into buckets of the given granularity.
+
+    ``cost`` only contains days covered by a tariff, ``cost_days`` counts them.
+    """
     buckets: list[dict[str, Any]] = []
     cursor = bucket_start(start, granularity)
     while cursor <= end:
@@ -332,16 +411,16 @@ def aggregate(
             ESTIMATED: 0.0,
             FORECAST: 0.0,
             "cost": None,
+            "cost_days": 0,
         }
         cost = 0.0
-        has_cost = False
         for d, value, kind in model.series(b_start, b_end, today):
             bucket[kind] += value
             if tariffs and (tariff := find_tariff(tariffs, d)):
                 cost += tariff.day_cost(value)
-                has_cost = True
+                bucket["cost_days"] += 1
         bucket["total"] = bucket[MEASURED] + bucket[ESTIMATED] + bucket[FORECAST]
-        if has_cost:
+        if bucket["cost_days"]:
             bucket["cost"] = cost
         buckets.append(bucket)
         cursor = nxt
@@ -353,6 +432,7 @@ def summarize(buckets: list[dict[str, Any]]) -> dict[str, Any]:
     total = sum(b["total"] for b in buckets)
     days = sum(b["days"] for b in buckets)
     costs = [b["cost"] for b in buckets if b["cost"] is not None]
+    cost_days = sum(b.get("cost_days", 0) for b in buckets)
     return {
         "total": total,
         MEASURED: sum(b[MEASURED] for b in buckets),
@@ -361,112 +441,261 @@ def summarize(buckets: list[dict[str, Any]]) -> dict[str, Any]:
         "days": days,
         "per_day": total / days if days else 0.0,
         "cost": sum(costs) if costs else None,
+        "cost_coverage": cost_days / days if days else 0.0,
     }
 
 
-def billing_periods(tariff: Tariff, today: date) -> list[tuple[date, date]]:
-    """Return the billing periods of a contract.
+# ---------------------------------------------------------------- billing
 
-    Open-ended contracts are expanded up to the period containing ``today``
-    plus one following period.  At most 50 periods are returned.
-    """
-    periods: list[tuple[date, date]] = []
-    months = max(1, tariff.billing_months)
-    start = tariff.start
-    index = 1
-    while len(periods) < 50:
-        end = add_months(tariff.start, months * index) - timedelta(days=1)
-        if tariff.end is not None and end >= tariff.end:
-            periods.append((start, tariff.end))
-            break
-        periods.append((start, end))
-        start = end + timedelta(days=1)
-        index += 1
-        if tariff.end is None and end >= today and len(periods) >= 2 and periods[-2][1] >= today:
-            break
+
+def billing_date(year: int, day: int, month: int) -> date:
+    """Billing date ("Stichtag") of a year, clamped to the month length."""
+    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
+
+def billing_period_for(d: date, day: int, month: int) -> tuple[date, date]:
+    """Billing period (day after the previous billing date .. billing date) containing ``d``."""
+    end = billing_date(d.year, day, month)
+    if d > end:
+        end = billing_date(d.year + 1, day, month)
+    start = billing_date(end.year - 1, day, month) + timedelta(days=1)
+    return start, end
+
+
+def billing_periods(first: date, last: date, day: int, month: int) -> list[tuple[date, date]]:
+    """All billing periods from the one containing ``first`` to the one containing ``last``."""
+    periods = [billing_period_for(first, day, month)]
+    while periods[-1][1] < last and len(periods) < 100:
+        periods.append(billing_period_for(periods[-1][1] + timedelta(days=1), day, month))
     return periods
 
 
-def current_period_index(periods: list[tuple[date, date]], today: date) -> int:
-    """Return the index of the billing period containing ``today``."""
+def period_label(start: date, end: date) -> str:
+    """Label of a billing period: "2025/26" or "2025" for calendar years."""
+    if start.year == end.year:
+        return str(start.year)
+    return f"{start.year}/{end.year % 100:02d}"
+
+
+def period_index(periods: list[tuple[date, date]], d: date) -> int:
+    """Index of the period containing ``d`` (first/last period if outside)."""
     for index, (start, end) in enumerate(periods):
-        if start <= today <= end:
+        if start <= d <= end:
             return index
-    if periods and today < periods[0][0]:
-        return 0
-    # Contract ended: show the last period.
-    last = 0
-    for index, (start, _end) in enumerate(periods):
-        if start <= today:
-            last = index
-    return last
+    return 0 if periods and d < periods[0][0] else max(0, len(periods) - 1)
 
 
-def payment_dates(start: date, end: date) -> list[date]:
-    """Monthly advance payment dates within a billing period."""
-    dates: list[date] = []
-    index = 0
-    while (pay := add_months(start, index)) <= end:
-        dates.append(pay)
-        index += 1
-    return dates
+def payment_schedule(tariff: Tariff, until: date, billing_month: int) -> list[tuple[date, float]]:
+    """Monthly advance payments of a contract up to ``until``.
+
+    Payments start with ``first_payment`` (default: first payment day on or
+    after the contract start) and are due on ``payment_day`` every month
+    while the contract runs.  With 11 payments per year there is no payment
+    in the month of the billing date.  Amounts follow ``advance_changes``.
+    """
+    day = max(1, min(int(tariff.payment_day or 1), 31))
+    if tariff.first_payment:
+        current = tariff.first_payment
+    else:
+        current = date(
+            tariff.start.year,
+            tariff.start.month,
+            min(day, calendar.monthrange(tariff.start.year, tariff.start.month)[1]),
+        )
+        if current < tariff.start:
+            current = add_months(current.replace(day=1), 1)
+            current = current.replace(day=min(day, calendar.monthrange(current.year, current.month)[1]))
+    payments: list[tuple[date, float]] = []
+    month_start = current.replace(day=1)
+    while current <= until and (tariff.end is None or current <= tariff.end):
+        if not (tariff.payments_per_year == 11 and current.month == billing_month):
+            amount = tariff.advance_at(current)
+            if amount > 0:
+                payments.append((current, amount))
+        month_start = add_months(month_start, 1)
+        current = month_start.replace(
+            day=min(day, calendar.monthrange(month_start.year, month_start.month)[1])
+        )
+    return payments
 
 
 def billing_forecast(
     model: ConsumptionModel,
-    tariff: Tariff,
+    tariffs: list[Tariff],
     period: tuple[date, date],
     today: date,
+    billing_month: int = DEFAULT_BILLING_MONTH,
 ) -> dict[str, Any]:
-    """Forecast the bill of a billing period.
+    """Calculate (or forecast) the bill of a billing period.
 
-    ``balance`` is positive if a refund is expected and negative if an
-    additional payment is expected.
+    Several tariffs within the period are applied day by day.  Costs only
+    contain days covered by a tariff (see ``cost_coverage``).  ``balance`` is
+    positive if a refund is expected and negative for an additional payment.
     """
     start, end = period
     consumption = {MEASURED: 0.0, ESTIMATED: 0.0, FORECAST: 0.0}
+    billed = 0.0
     energy_cost = 0.0
-    for _d, value, kind in model.series(start, end, today):
+    base_cost = 0.0
+    full_cost = 0.0  # including days without tariff (nearest tariff)
+    covered = 0
+    segments: list[dict[str, Any]] = []
+    for d, value, kind in model.series(start, end, today):
         consumption[kind] += value
-        energy_cost += value * tariff.conversion_factor * tariff.unit_price
+        tariff = find_tariff(tariffs, d)
+        if tariff is None:
+            near = nearest_tariff(tariffs, d)
+            billed += value * (near.conversion_factor if near else 1.0)
+            if near:
+                full_cost += near.day_cost(value)
+            continue
+        covered += 1
+        day_energy = value * tariff.conversion_factor * tariff.unit_price
+        day_base = tariff.base_price * 12 / 365
+        billed += value * tariff.conversion_factor
+        energy_cost += day_energy
+        base_cost += day_base
+        full_cost += day_energy + day_base
+        if not segments or segments[-1]["contract_id"] != tariff.contract_id:
+            segments.append(
+                {
+                    "contract_id": tariff.contract_id,
+                    "provider": tariff.provider,
+                    "tariff": tariff.tariff,
+                    "start": d.isoformat(),
+                    "end": d.isoformat(),
+                    "days": 0,
+                    "consumption": 0.0,
+                    "consumption_billing_unit": 0.0,
+                    "unit_price": tariff.unit_price,
+                    "base_price": tariff.base_price,
+                    "energy_cost": 0.0,
+                    "base_cost": 0.0,
+                }
+            )
+        segment = segments[-1]
+        segment["end"] = d.isoformat()
+        segment["days"] += 1
+        segment["consumption"] += value
+        segment["consumption_billing_unit"] += value * tariff.conversion_factor
+        segment["energy_cost"] += day_energy
+        segment["base_cost"] += day_base
+
     total = sum(consumption.values())
     days_total = (end - start).days + 1
     days_elapsed = max(0, min(days_total, (today - start).days + 1))
-    payments = payment_dates(start, end)
-    months = len(payments)
-    base_cost = tariff.base_price * 12 / 365 * days_total
     total_cost = energy_cost + base_cost
-    advance_total = tariff.advance_payment * months
-    paid = tariff.advance_payment * sum(1 for p in payments if p <= today)
+    payments = sorted(
+        (pay_day, amount)
+        for tariff in tariffs
+        for pay_day, amount in payment_schedule(tariff, end, billing_month)
+        if start <= pay_day <= end
+    )
+    advance_total = math.fsum(amount for _, amount in payments)
+    paid = math.fsum(amount for pay_day, amount in payments if pay_day <= today)
     balance = advance_total - total_cost
-    if abs(balance) < 0.005:
+    if not covered and not payments:
+        result = "no_tariff"
+    elif abs(balance) < 0.005:
         result = "even"
     elif balance > 0:
         result = "refund"
     else:
         result = "additional_payment"
+    last_tariff = nearest_tariff(tariffs, end)
+    per_year = last_tariff.payments_per_year if last_tariff else 12
     return {
-        "contract_id": tariff.contract_id,
+        "label": period_label(start, end),
         "start": start.isoformat(),
         "end": end.isoformat(),
         "days_total": days_total,
         "days_elapsed": days_elapsed,
         "progress": days_elapsed / days_total if days_total else 0.0,
+        "finished": today > end,
         "consumption": {**consumption, "total": total},
-        "consumption_billing_unit": total * tariff.conversion_factor,
+        "consumption_billing_unit": billed,
         "measured_share": consumption[MEASURED] / total if total else 0.0,
+        "reading_start": model.reading_at(start - timedelta(days=1), today),
+        "reading_end": model.reading_at(end, today),
+        # "measured": the billing date lies between two readings (interpolated)
+        "reading_start_kind": reading_kind(model, start - timedelta(days=1), today),
+        "reading_end_kind": reading_kind(model, end, today),
         "energy_cost": energy_cost,
         "base_cost": base_cost,
         "total_cost": total_cost,
-        "advance_payment": tariff.advance_payment,
-        "payments_count": months,
+        "cost_coverage": covered / days_total if days_total else 0.0,
+        "segments": segments,
+        "payments": [
+            {"date": pay_day.isoformat(), "amount": amount, "paid": pay_day <= today}
+            for pay_day, amount in payments
+        ],
+        "payments_count": len(payments),
         "advance_total": advance_total,
         "paid_to_date": paid,
         "balance": balance,
         "result": result,
-        "recommended_advance": total_cost / months if months else 0.0,
-        "finished": today > end,
+        "payments_per_year": per_year,
+        "recommended_advance": full_cost / per_year if per_year and tariffs else 0.0,
     }
+
+
+def reading_kind(model: ConsumptionModel, day: date, today: date) -> str | None:
+    """How the meter value at the end of ``day`` is known.
+
+    ``reading``: there is a reading, ``interpolated``: between two readings,
+    ``estimated``: in the past but outside the readings, ``forecast``: future.
+    """
+    if not model.readings:
+        return None
+    if any(r.day == day for r in model.readings):
+        return "reading"
+    if model.first_day < day < model.last_day:
+        return "interpolated"
+    return "forecast" if day > today else "estimated"
+
+
+def compare_bill(bill: dict[str, Any], own: dict[str, Any]) -> dict[str, Any]:
+    """Compare a bill of the utility with the own calculation of its period."""
+
+    def deviation(actual: float | None, calculated: float | None) -> dict[str, Any] | None:
+        if actual is None or calculated is None:
+            return None
+        diff = actual - calculated
+        return {
+            "bill": actual,
+            "own": calculated,
+            "diff": diff,
+            "pct": diff / calculated * 100 if calculated else None,
+        }
+
+    in_billing_unit = bill.get("consumption_unit") == "billing"
+    own_consumption = own["consumption_billing_unit"] if in_billing_unit else own["consumption"]["total"]
+    has_cost = own["cost_coverage"] > 0
+    bill_balance = bill_result(bill)
+    return {
+        "consumption": deviation(_float(bill.get("consumption")), own_consumption),
+        "total_cost": deviation(_float(bill.get("total_cost")), own["total_cost"] if has_cost else None),
+        "advances": deviation(
+            _float(bill.get("advances_paid")), own["advance_total"] if own["payments"] else None
+        ),
+        "balance": deviation(bill_balance, own["balance"] if has_cost else None),
+        "cost_coverage": own["cost_coverage"],
+    }
+
+
+def _float(value: Any) -> float | None:
+    return None if value is None or value == "" else float(value)
+
+
+def bill_result(bill: dict[str, Any]) -> float | None:
+    """Result of a bill (positive: refund), calculated if not given."""
+    if bill.get("balance") is not None:
+        return float(bill["balance"])
+    cost = _float(bill.get("total_cost"))
+    paid = _float(bill.get("advances_paid"))
+    if cost is None or paid is None:
+        return None
+    return paid - cost
 
 
 def build_model(
@@ -481,11 +710,21 @@ def build_model(
         readings=[Reading(parse_date(r["date"]), float(r["value"]), bool(r.get("reset"))) for r in readings],
         factors=resolve_profile(meter.get("type", "other"), meter.get("profile")),
         fallback_annual=float(annual or 0.0),
+        method=meter.get("forecast_method") or FORECAST_LAST_YEAR,
     )
 
 
-def build_tariff(contract: dict[str, Any]) -> Tariff:
-    """Build a tariff from a stored contract dict."""
+def build_tariff(contract: dict[str, Any], extra_changes: Iterable[tuple[date, float]] = ()) -> Tariff:
+    """Build a tariff from a stored contract dict.
+
+    ``extra_changes`` are advance changes from bills ("new advance from").
+    Changes stored with the contract win on the same day.
+    """
+    changes: dict[date, float] = {}
+    for since, amount in extra_changes:
+        changes[since] = float(amount)
+    for change in contract.get("advance_changes") or []:
+        changes[parse_date(change["date"])] = float(change["amount"])
     return Tariff(
         contract_id=contract["id"],
         start=parse_date(contract["start_date"]),
@@ -494,5 +733,10 @@ def build_tariff(contract: dict[str, Any]) -> Tariff:
         base_price=float(contract.get("base_price") or 0.0),
         advance_payment=float(contract.get("advance_payment") or 0.0),
         conversion_factor=float(contract.get("conversion_factor") or 1.0),
-        billing_months=int(contract.get("billing_months") or 12),
+        payments_per_year=int(contract.get("payments_per_year") or 12),
+        payment_day=int(contract.get("payment_day") or 1),
+        first_payment=parse_date(contract["first_payment"]) if contract.get("first_payment") else None,
+        advance_changes=sorted(changes.items()),
+        provider=contract.get("provider") or "",
+        tariff=contract.get("tariff") or "",
     )

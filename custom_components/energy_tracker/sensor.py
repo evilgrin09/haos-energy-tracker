@@ -49,30 +49,73 @@ def _summary_attrs(key: str) -> Callable[[Overview], dict[str, Any]]:
             "estimated": round(summary["estimated"], 3),
             "forecast": round(summary["forecast"], 3),
             "cost": round(summary["cost"], 2) if summary["cost"] is not None else None,
+            # share of the days that are covered by a tariff (costs are partial below 100)
+            "cost_coverage": round(summary["cost_coverage"] * 100, 1),
         }
 
     return attrs
+
+
+def _r(value: float | None, digits: int = 2) -> float | None:
+    return None if value is None else round(value, digits)
 
 
 def _billing_attrs(ov: Overview) -> dict[str, Any]:
     billing = ov["billing"]
     if not billing:
         return {}
-    contract = ov["contract"] or {}
+    segments = billing["segments"]
     return {
-        "provider": contract.get("provider"),
-        "tariff": contract.get("tariff"),
+        "billing_year": billing["label"],
         "period_start": billing["start"],
         "period_end": billing["end"],
         "progress": round(billing["progress"] * 100, 1),
+        "providers": sorted({seg["provider"] for seg in segments if seg["provider"]}),
         "consumption": round(billing["consumption"]["total"], 2),
         "measured_share": round(billing["measured_share"] * 100, 1),
+        "reading_start": _r(billing["reading_start"]),
+        "reading_end": _r(billing["reading_end"]),
         "total_cost": round(billing["total_cost"], 2),
+        "cost_coverage": round(billing["cost_coverage"] * 100, 1),
         "advance_total": round(billing["advance_total"], 2),
+        "payments_count": billing["payments_count"],
         "paid_to_date": round(billing["paid_to_date"], 2),
         "balance": round(billing["balance"], 2),
         "result": billing["result"],
         "recommended_advance": round(billing["recommended_advance"], 2),
+    }
+
+
+def _last_bill_attrs(ov: Overview) -> dict[str, Any]:
+    details = ov["last_bill"]
+    if not details:
+        return {}
+    bill = details["bill"]
+    comparison = details["comparison"]
+
+    def dev(key: str) -> tuple[float | None, float | None]:
+        item = comparison[key]
+        return (None, None) if item is None else (_r(item["diff"]), _r(item["pct"], 1))
+
+    balance_eur, _balance_pct = dev("balance")
+    cost_eur, cost_pct = dev("total_cost")
+    consumption_abs, consumption_pct = dev("consumption")
+    return {
+        "billing_year": details["label"],
+        "period_start": bill["start_date"],
+        "period_end": bill["end_date"],
+        "consumption": bill.get("consumption"),
+        "total_cost": bill.get("total_cost"),
+        "advances_paid": bill.get("advances_paid"),
+        "new_advance": bill.get("new_advance"),
+        "new_advance_from": bill.get("new_advance_from"),
+        "forecast_balance": _r(details["own"]["balance"]) if comparison["balance"] else None,
+        "deviation_balance": balance_eur,
+        "deviation_cost": cost_eur,
+        "deviation_cost_pct": cost_pct,
+        "deviation_consumption": consumption_abs,
+        "deviation_consumption_pct": consumption_pct,
+        "cost_coverage": round(comparison["cost_coverage"] * 100, 1),
     }
 
 
@@ -155,6 +198,15 @@ SENSORS: tuple[TrackerSensorDescription, ...] = (
         unit_kind=UNIT_CURRENCY,
         value_fn=_billing_value("balance"),
         attrs_fn=_billing_attrs,
+    ),
+    TrackerSensorDescription(
+        key="last_bill",
+        translation_key="last_bill",
+        device_class=SensorDeviceClass.MONETARY,
+        suggested_display_precision=2,
+        unit_kind=UNIT_CURRENCY,
+        value_fn=lambda ov: _r(ov["last_bill"]["result"]) if ov["last_bill"] else None,
+        attrs_fn=_last_bill_attrs,
     ),
 )
 
@@ -270,9 +322,14 @@ class TrackerSensor(SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Billing sensors are only available with a contract."""
+        """Billing sensors need a tariff in the period, the last bill sensor a bill."""
+        key = self.entity_description.key
+        if key == "last_bill":
+            last_bill = self._overview["last_bill"]
+            return last_bill is not None and last_bill["result"] is not None
         if self.entity_description.unit_kind == UNIT_CURRENCY:
-            return self._overview["billing"] is not None
+            billing = self._overview["billing"]
+            return billing is not None and (billing["cost_coverage"] > 0 or billing["payments_count"] > 0)
         return True
 
     @property

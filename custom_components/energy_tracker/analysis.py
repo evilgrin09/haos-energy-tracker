@@ -6,11 +6,18 @@ from datetime import date, timedelta
 from typing import Any
 
 from .calc import (
+    DEFAULT_BILLING_DAY,
+    DEFAULT_BILLING_MONTH,
     aggregate,
+    bill_result,
     billing_forecast,
+    billing_period_for,
     billing_periods,
-    build_tariff,
-    current_period_index,
+    compare_bill,
+    find_tariff,
+    parse_date,
+    period_index,
+    period_label,
     summarize,
 )
 from .store import TrackerError, TrackerStore
@@ -69,14 +76,134 @@ def meter_overview(store: TrackerStore, meter_id: str, today: date) -> dict[str,
         "previous_year": _range_summary(
             store, meter_id, prev_year_start, year_start - timedelta(days=1), today
         ),
-        "contract": None,
+        "contract": store.active_contract(meter_id, today),
         "billing": None,
+        "last_bill": None,
     }
-    contract = store.active_contract(meter_id, today)
-    if contract:
-        result["contract"] = contract
-        result["billing"] = contract_billing(store, contract["id"], today)["selected"]
+    tariffs = store.tariffs(meter_id)
+    if tariffs:
+        day, month = billing_date_of(meter)
+        result["billing"] = billing_forecast(
+            model, tariffs, billing_period_for(today, day, month), today, month
+        )
+    if bills := store.meter_bills(meter_id):
+        result["last_bill"] = bill_details(store, bills[-1], today)
     return result
+
+
+def billing_date_of(meter: dict[str, Any]) -> tuple[int, int]:
+    """Billing date (day, month) of a meter."""
+    return (
+        int(meter.get("billing_day") or DEFAULT_BILLING_DAY),
+        int(meter.get("billing_month") or DEFAULT_BILLING_MONTH),
+    )
+
+
+def meter_periods(store: TrackerStore, meter_id: str, today: date) -> list[tuple[date, date]]:
+    """Billing periods of a meter: from the first data up to the current period."""
+    day, month = billing_date_of(store.meters[meter_id])
+    starts = [today]
+    readings = store.meter_readings(meter_id)
+    if readings:
+        # the first reading only marks the start of the measurement
+        starts.append(parse_date(readings[0]["date"]) + timedelta(days=1))
+    starts.extend(parse_date(c["start_date"]) for c in store.meter_contracts(meter_id))
+    starts.extend(parse_date(b["start_date"]) for b in store.meter_bills(meter_id))
+    ends = [today] + [parse_date(b["end_date"]) for b in store.meter_bills(meter_id)]
+    return billing_periods(min(starts), max(ends), day, month)
+
+
+def tariff_gaps(store: TrackerStore, meter_id: str, today: date) -> dict[str, Any]:
+    """Days without tariff: gaps between contracts and the time before the first one."""
+    contracts = store.meter_contracts(meter_id)
+    readings = store.meter_readings(meter_id)
+    result: dict[str, Any] = {"gaps": [], "before": None, "after": None}
+    if not contracts:
+        return result
+    tariffs = store.tariffs(meter_id)
+    first = min(t.start for t in tariffs)
+    open_end = any(t.end is None for t in tariffs)
+    last = None if open_end else max(t.end for t in tariffs if t.end)
+    # gaps between the first and the last contract
+    gap_start = None
+    end = last or max(t.start for t in tariffs)
+    day = first
+    while day <= end:
+        if find_tariff(tariffs, day) is None:
+            gap_start = gap_start or day
+        elif gap_start:
+            result["gaps"].append(
+                {"start": gap_start.isoformat(), "end": (day - timedelta(days=1)).isoformat()}
+            )
+            gap_start = None
+        day += timedelta(days=1)
+    if readings:
+        data_start = parse_date(readings[0]["date"]) + timedelta(days=1)
+        if data_start < first:
+            result["before"] = {
+                "start": data_start.isoformat(),
+                "end": (first - timedelta(days=1)).isoformat(),
+            }
+    if last is not None and last < today:
+        result["after"] = {"start": (last + timedelta(days=1)).isoformat(), "end": None}
+    return result
+
+
+def bill_details(store: TrackerStore, bill: dict[str, Any], today: date) -> dict[str, Any]:
+    """A bill together with the own calculation of its period."""
+    meter_id = bill["meter_id"]
+    _day, month = billing_date_of(store.meters[meter_id])
+    start = parse_date(bill["start_date"])
+    end = parse_date(bill["end_date"])
+    own = billing_forecast(store.model(meter_id), store.tariffs(meter_id), (start, end), today, month)
+    return {
+        "bill": bill,
+        "label": period_label(start, end),
+        "result": bill_result(bill),
+        "own": own,
+        "comparison": compare_bill(bill, own),
+    }
+
+
+def meter_billing(
+    store: TrackerStore, meter_id: str, today: date, index: int | None = None
+) -> dict[str, Any]:
+    """Billing periods of a meter and the calculation of one of them."""
+    if meter_id not in store.meters:
+        raise TrackerError("not_found", f"Meter {meter_id} not found")
+    _day, month = billing_date_of(store.meters[meter_id])
+    periods = meter_periods(store, meter_id, today)
+    current = period_index(periods, today)
+    if index is None or not 0 <= index < len(periods):
+        index = current
+    bills = store.meter_bills(meter_id)
+
+    def bill_for(period: tuple[date, date]) -> dict[str, Any] | None:
+        start, end = period
+        matching = [b for b in bills if start <= parse_date(b["end_date"]) <= end]
+        return matching[-1] if matching else None
+
+    selected = periods[index]
+    bill = bill_for(selected)
+    return {
+        "meter_id": meter_id,
+        "periods": [
+            {
+                "index": i,
+                "start": s.isoformat(),
+                "end": e.isoformat(),
+                "label": period_label(s, e),
+                "bill_id": (b["id"] if (b := bill_for((s, e))) else None),
+            }
+            for i, (s, e) in enumerate(periods)
+        ],
+        "current_index": current,
+        "selected_index": index,
+        "selected": billing_forecast(store.model(meter_id), store.tariffs(meter_id), selected, today, month),
+        "bill": bill_details(store, bill, today) if bill else None,
+        "bills": [bill_details(store, b, today) for b in reversed(bills)],
+        "tariff_gaps": tariff_gaps(store, meter_id, today),
+    }
 
 
 def overview(store: TrackerStore, today: date) -> list[dict[str, Any]]:
@@ -130,27 +257,3 @@ def statistics(
             "summary": summarize(compare_buckets),
         }
     return result
-
-
-def contract_billing(
-    store: TrackerStore, contract_id: str, today: date, period_index: int | None = None
-) -> dict[str, Any]:
-    """Return billing periods of a contract and the forecast of one period."""
-    contract = store.contracts.get(contract_id)
-    if contract is None:
-        raise TrackerError("not_found", f"Contract {contract_id} not found")
-    tariff = build_tariff(contract)
-    model = store.model(contract["meter_id"])
-    periods = billing_periods(tariff, today)
-    current = current_period_index(periods, today)
-    if period_index is None or not 0 <= period_index < len(periods):
-        period_index = current
-    return {
-        "contract": contract,
-        "periods": [
-            {"index": i, "start": s.isoformat(), "end": e.isoformat()} for i, (s, e) in enumerate(periods)
-        ],
-        "current_index": current,
-        "selected_index": period_index,
-        "selected": billing_forecast(model, tariff, periods[period_index], today),
-    }

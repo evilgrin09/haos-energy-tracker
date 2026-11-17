@@ -13,7 +13,7 @@ from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
 from . import analysis, importer
-from .calc import GRANULARITIES
+from .calc import FORECAST_METHODS, GRANULARITIES
 from .const import DOMAIN, METER_TYPES, PROFILES
 from .photo import PHOTO_ID_RE, async_archive_photo, async_discard_photo
 from .store import TrackerError, TrackerStore
@@ -31,6 +31,9 @@ METER_SCHEMA = {
     vol.Optional("annual_estimate"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
     vol.Optional("number"): _OPT_STR,
     vol.Optional("icon"): _OPT_STR,
+    vol.Optional("billing_day"): vol.All(vol.Coerce(int), vol.Range(min=1, max=31)),
+    vol.Optional("billing_month"): vol.All(vol.Coerce(int), vol.Range(min=1, max=12)),
+    vol.Optional("forecast_method"): vol.In(FORECAST_METHODS),
 }
 
 READING_SCHEMA = {
@@ -48,12 +51,35 @@ CONTRACT_SCHEMA = {
     vol.Optional("customer_number"): _OPT_STR,
     vol.Optional("start_date"): _DATE,
     vol.Optional("end_date"): vol.Any(None, "", _DATE),
-    vol.Optional("billing_months"): vol.All(vol.Coerce(int), vol.Range(min=1, max=36)),
     vol.Optional("unit_price"): vol.All(vol.Coerce(float), vol.Range(min=0)),
     vol.Optional("base_price"): vol.All(vol.Coerce(float), vol.Range(min=0)),
     vol.Optional("advance_payment"): vol.All(vol.Coerce(float), vol.Range(min=0)),
     vol.Optional("conversion_factor"): vol.All(vol.Coerce(float), vol.Range(min=0.0001)),
+    vol.Optional("payments_per_year"): vol.All(vol.Coerce(int), vol.In([11, 12])),
+    vol.Optional("payment_day"): vol.All(vol.Coerce(int), vol.Range(min=1, max=31)),
+    vol.Optional("first_payment"): vol.Any(None, "", _DATE),
+    vol.Optional("advance_changes"): [
+        {
+            vol.Required("date"): _DATE,
+            vol.Required("amount"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        }
+    ],
     vol.Optional("notice_period"): _OPT_STR,
+    vol.Optional("note"): _OPT_STR,
+}
+
+BILL_SCHEMA = {
+    vol.Optional("meter_id"): cv.string,
+    vol.Optional("start_date"): _DATE,
+    vol.Optional("end_date"): _DATE,
+    vol.Optional("consumption"): _OPT_FLOAT,
+    vol.Optional("consumption_unit"): vol.In(["meter", "billing"]),
+    vol.Optional("total_cost"): _OPT_FLOAT,
+    vol.Optional("advances_paid"): _OPT_FLOAT,
+    # positive: refund, negative: additional payment; None: calculated
+    vol.Optional("balance"): _OPT_FLOAT,
+    vol.Optional("new_advance"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
+    vol.Optional("new_advance_from"): vol.Any(None, "", _DATE),
     vol.Optional("note"): _OPT_STR,
 }
 
@@ -97,6 +123,7 @@ def ws_data(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> di
         "meters": list(store.meters.values()),
         "readings": sorted(store.readings.values(), key=lambda r: r["date"]),
         "contracts": list(store.contracts.values()),
+        "bills": list(store.bills.values()),
         "currency": hass.config.currency,
         "photo_available": "ai_task" in hass.config.components,
         "statistics_available": "recorder" in hass.config.components,
@@ -344,8 +371,13 @@ def ws_contract_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, An
     """Create or update a contract."""
     data = _dates_to_str(msg)
     contract_id = data.pop("contract_id", None)
-    if data.get("end_date") == "":
-        data["end_date"] = None
+    for key in ("end_date", "first_payment"):
+        if data.get(key) == "":
+            data[key] = None
+    if "advance_changes" in data:
+        data["advance_changes"] = [
+            {"date": c["date"].isoformat(), "amount": c["amount"]} for c in msg["advance_changes"]
+        ]
     if not contract_id:
         for key in ("meter_id", "start_date"):
             if key not in data:
@@ -393,16 +425,50 @@ def ws_statistics(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any])
 
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): f"{DOMAIN}/bill/save",
+        vol.Optional("bill_id"): cv.string,
+        **BILL_SCHEMA,
+    }
+)
+@websocket_api.require_admin
+@callback
+@_handler
+def ws_bill_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
+    """Create or update a bill of the utility."""
+    data = _dates_to_str(msg)
+    bill_id = data.pop("bill_id", None)
+    if data.get("new_advance_from") == "":
+        data["new_advance_from"] = None
+    if not bill_id:
+        for key in ("meter_id", "start_date", "end_date"):
+            if key not in data:
+                raise TrackerError("invalid_format", f"Missing field {key}")
+    return store.save_bill(data, bill_id)
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/bill/delete", vol.Required("bill_id"): cv.string}
+)
+@websocket_api.require_admin
+@callback
+@_handler
+def ws_bill_delete(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> None:
+    """Delete a bill."""
+    store.delete_bill(msg["bill_id"])
+
+
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): f"{DOMAIN}/billing",
-        vol.Required("contract_id"): cv.string,
+        vol.Required("meter_id"): cv.string,
         vol.Optional("period_index"): vol.Coerce(int),
     }
 )
 @callback
 @_handler
 def ws_billing(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
-    """Return the billing forecast of a contract."""
-    return analysis.contract_billing(store, msg["contract_id"], dt_util.now().date(), msg.get("period_index"))
+    """Return the billing periods of a meter and the calculation of one period."""
+    return analysis.meter_billing(store, msg["meter_id"], dt_util.now().date(), msg.get("period_index"))
 
 
 @callback
@@ -421,6 +487,8 @@ def async_register(hass: HomeAssistant) -> None:
         ws_reading_delete,
         ws_contract_save,
         ws_contract_delete,
+        ws_bill_save,
+        ws_bill_delete,
         ws_statistics,
         ws_billing,
     ):

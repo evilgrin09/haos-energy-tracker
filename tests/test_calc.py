@@ -14,9 +14,6 @@ from custom_components.energy_tracker.calc import (
     Tariff,
     add_months,
     aggregate,
-    billing_forecast,
-    billing_periods,
-    current_period_index,
     summarize,
 )
 
@@ -123,56 +120,7 @@ def test_costs_in_buckets() -> None:
     tariff = Tariff("c", date(2025, 1, 1), None, unit_price=0.5, base_price=0)
     buckets = aggregate(model, date(2024, 12, 31), date(2025, 1, 1), "day", date(2025, 1, 1), [tariff])
     assert buckets[0]["cost"] is None
+    assert buckets[0]["cost_days"] == 0
+    assert buckets[1]["cost_days"] == 1
+    assert summarize(buckets)["cost_coverage"] == pytest.approx(0.5)
     assert buckets[1]["cost"] == pytest.approx(10 * 0.5 * 365 / 365, rel=0.02)
-
-
-def test_billing_forecast_additional_payment() -> None:
-    """Half a year measured, rest extrapolated, advance payments too low."""
-    model = ConsumptionModel([Reading(date(2024, 12, 31), 0), Reading(date(2025, 6, 30), 1000)], FLAT)
-    tariff = Tariff("c", date(2025, 1, 1), None, unit_price=0.3, base_price=10, advance_payment=50)
-    periods = billing_periods(tariff, date(2025, 6, 30))
-    assert periods[0] == (date(2025, 1, 1), date(2025, 12, 31))
-    result = billing_forecast(model, tariff, periods[0], date(2025, 6, 30))
-    total = 1000 + 1000 / 181 * 184  # 181 measured days, 184 extrapolated
-    cost = total * 0.3 + 120
-    assert result["consumption"]["total"] == pytest.approx(total)
-    assert result["consumption"]["measured"] == pytest.approx(1000)
-    assert result["consumption"]["forecast"] == pytest.approx(total - 1000)
-    assert result["total_cost"] == pytest.approx(cost)
-    assert result["advance_total"] == pytest.approx(600)
-    assert result["paid_to_date"] == pytest.approx(300)
-    assert result["balance"] == pytest.approx(600 - cost)
-    assert result["result"] == "additional_payment"
-    assert result["recommended_advance"] == pytest.approx(cost / 12)
-
-
-def test_billing_forecast_conversion_factor_refund() -> None:
-    """Gas in m³ is converted to kWh for billing."""
-    model = ConsumptionModel([], FLAT, fallback_annual=1000)
-    tariff = Tariff("c", date(2025, 1, 1), None, unit_price=0.1, advance_payment=100, conversion_factor=10)
-    result = billing_forecast(model, tariff, (date(2025, 1, 1), date(2025, 12, 31)), date(2025, 1, 1))
-    assert result["consumption_billing_unit"] == pytest.approx(10000)
-    assert result["total_cost"] == pytest.approx(1000)
-    assert result["balance"] == pytest.approx(200)
-    assert result["result"] == "refund"
-
-
-def test_billing_periods_with_end() -> None:
-    """Periods end with the contract."""
-    tariff = Tariff("c", date(2023, 4, 1), date(2025, 9, 30))
-    periods = billing_periods(tariff, date(2025, 1, 1))
-    assert periods == [
-        (date(2023, 4, 1), date(2024, 3, 31)),
-        (date(2024, 4, 1), date(2025, 3, 31)),
-        (date(2025, 4, 1), date(2025, 9, 30)),
-    ]
-    assert current_period_index(periods, date(2025, 1, 1)) == 1
-    assert current_period_index(periods, date(2026, 1, 1)) == 2
-
-
-def test_open_ended_periods_include_next() -> None:
-    """Open ended contracts list periods up to the next one."""
-    tariff = Tariff("c", date(2022, 1, 1), None)
-    periods = billing_periods(tariff, date(2025, 3, 1))
-    assert periods[-2] == (date(2025, 1, 1), date(2025, 12, 31))
-    assert periods[-1] == (date(2026, 1, 1), date(2026, 12, 31))

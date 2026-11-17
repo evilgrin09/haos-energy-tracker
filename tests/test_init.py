@@ -77,7 +77,7 @@ async def test_full_flow(hass: HomeAssistant, entry, hass_ws_client) -> None:
         advance_payment=80,
     )
     assert msg["success"], msg
-    contract_id = msg["result"]["id"]
+    assert msg["result"]["payments_per_year"] == 12
     await hass.async_block_till_done()
 
     state = hass.states.get(reading_entity)
@@ -103,11 +103,43 @@ async def test_full_flow(hass: HomeAssistant, entry, hass_ws_client) -> None:
     assert result["buckets"][0]["cost"] is not None
     assert len(result["compare"]["buckets"]) == 12
 
-    msg = await _ws(client, "billing", contract_id=contract_id)
+    msg = await _ws(client, "billing", meter_id=meter_id)
     assert msg["success"], msg
     billing = msg["result"]["selected"]
-    assert billing["start"] == "2025-01-01"
-    assert billing["advance_total"] == pytest.approx(960)
+    # billing date 30.09. (default), independent of the contract start
+    assert (billing["start"], billing["end"], billing["label"]) == ("2024-10-01", "2025-09-30", "2024/25")
+    # contract from 01.01.2025: 9 payments of 80 € until September
+    assert billing["advance_total"] == pytest.approx(9 * 80)
+    assert billing["cost_coverage"] == pytest.approx(273 / 365)
+    # the measurement starts with the contract: no days without tariff
+    assert msg["result"]["tariff_gaps"] == {"gaps": [], "before": None, "after": None}
+
+    # a bill of the utility for the period 2024/25
+    msg = await _ws(
+        client,
+        "bill/save",
+        meter_id=meter_id,
+        start_date="2024-10-01",
+        end_date="2025-09-30",
+        consumption=2500,
+        total_cost=900,
+        advances_paid=720,
+        new_advance=95,
+        new_advance_from="2025-10-01",
+    )
+    assert msg["success"], msg
+    bill_id = msg["result"]["id"]
+    await hass.async_block_till_done()
+    last_bill = hass.states.get("sensor.strom_last_bill_refund_additional_payment")
+    assert float(last_bill.state) == pytest.approx(-180)
+    assert last_bill.attributes["billing_year"] == "2024/25"
+    assert last_bill.attributes["advances_paid"] == 720
+    msg = await _ws(client, "billing", meter_id=meter_id)
+    assert msg["result"]["bill"]["bill"]["id"] == bill_id
+    assert msg["result"]["periods"][-1]["bill_id"] == bill_id
+    assert msg["result"]["bill"]["comparison"]["consumption"]["bill"] == 2500
+    msg = await _ws(client, "bill/delete", bill_id=bill_id)
+    assert msg["success"], msg
 
     balance = hass.states.get("sensor.strom_expected_refund_additional_payment")
     assert balance is not None
@@ -116,6 +148,8 @@ async def test_full_flow(hass: HomeAssistant, entry, hass_ws_client) -> None:
     msg = await _ws(client, "overview")
     assert msg["success"], msg
     assert msg["result"][0]["quality"] == "good"
+    assert msg["result"][0]["billing"]["label"] == "2024/25"
+    assert msg["result"][0]["last_bill"] is None
 
     # Service with meter name
     response = await hass.services.async_call(
@@ -223,3 +257,116 @@ async def test_remove_entry_deletes_storage(hass: HomeAssistant, entry, hass_ws_
     assert await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
     assert f"{DOMAIN}.data" not in hass_storage
+
+
+@pytest.fixture
+def frozen_2026(freezer: FrozenDateTimeFactory) -> None:
+    """Freeze the time before the websocket client (and its token) is created."""
+    freezer.move_to("2026-11-17 12:00:00+00:00")
+
+
+async def test_storage_migration(hass: HomeAssistant, hass_storage, frozen_2026, hass_ws_client) -> None:
+    """Data of version 1 is migrated when the integration is loaded."""
+    hass_storage[f"{DOMAIN}.data"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"{DOMAIN}.data",
+        "data": {
+            "meters": [{"id": "m1", "name": "Gas", "type": "gas", "unit": "m³", "profile": "auto"}],
+            "readings": [
+                {"id": "r1", "meter_id": "m1", "date": "2025-09-08", "value": 10147.79, "reset": False},
+                {"id": "r2", "meter_id": "m1", "date": "2026-09-07", "value": 10874.85, "reset": False},
+            ],
+            "contracts": [
+                {
+                    "id": "c1",
+                    "meter_id": "m1",
+                    "start_date": "2026-10-01",
+                    "unit_price": 0.11,
+                    "base_price": 15.5,
+                    "advance_payment": 95,
+                    "conversion_factor": 10.4,
+                    "billing_months": 12,
+                }
+            ],
+        },
+    }
+    assert await async_setup_component(hass, "http", {})
+    entry = MockConfigEntry(domain=DOMAIN, options={"show_panel": False})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    store = hass.data[DOMAIN]
+    assert (store.meters["m1"]["billing_day"], store.meters["m1"]["billing_month"]) == (30, 9)
+    contract = store.contracts["c1"]
+    assert (contract["unit_price"], contract["advance_payment"], contract["conversion_factor"]) == (
+        0.11,
+        95,
+        10.4,
+    )
+    assert contract["payments_per_year"] == 12
+    assert store.bills == {}
+
+    client = await hass_ws_client(hass)
+    msg = await _ws(client, "billing", meter_id="m1")
+    result = msg["result"]
+    # the measurement starts on 09.09.2025, still in the billing year 2024/25
+    assert [p["label"] for p in result["periods"]] == ["2024/25", "2025/26", "2026/27"]
+    assert result["selected"]["label"] == "2026/27"
+    assert result["selected"]["advance_total"] == pytest.approx(12 * 95)
+    # readings since 08.09.2025, contract only from 01.10.2026
+    assert result["tariff_gaps"]["before"] == {"start": "2025-09-09", "end": "2026-09-30"}
+
+    msg = await _ws(client, "billing", meter_id="m1", period_index=1)
+    previous = msg["result"]["selected"]
+    assert previous["result"] == "no_tariff"
+    assert previous["cost_coverage"] == 0
+    await store.async_flush()
+    assert hass_storage[f"{DOMAIN}.data"]["version"] == 2
+
+
+async def test_tariff_gaps_and_meter_fields(hass: HomeAssistant, entry, hass_ws_client) -> None:
+    """Gaps between contracts are reported, billing date and method can be set."""
+    client = await hass_ws_client(hass)
+    msg = await _ws(
+        client,
+        "meter/save",
+        name="Strom",
+        meter_type="electricity",
+        unit="kWh",
+        billing_day=31,
+        billing_month=12,
+        forecast_method="average",
+    )
+    meter = msg["result"]
+    assert (meter["billing_day"], meter["billing_month"], meter["forecast_method"]) == (31, 12, "average")
+    msg = await _ws(client, "meter/save", name="X", meter_type="gas", unit="m³", billing_month=13)
+    assert not msg["success"]
+
+    for start, end in (("2024-01-01", "2024-06-30"), ("2024-08-01", None)):
+        msg = await _ws(
+            client,
+            "contract/save",
+            meter_id=meter["id"],
+            start_date=start,
+            end_date=end,
+            unit_price=0.3,
+            advance_payment=50,
+            payments_per_year=11,
+            payment_day=15,
+            advance_changes=[{"date": "2025-03-01", "amount": 60}],
+        )
+        assert msg["success"], msg
+    assert msg["result"]["advance_changes"] == [{"date": "2025-03-01", "amount": 60.0}]
+    msg = await _ws(
+        client, "contract/save", meter_id=meter["id"], start_date="2024-01-01", payments_per_year=10
+    )
+    assert not msg["success"]
+
+    msg = await _ws(client, "billing", meter_id=meter["id"])
+    result = msg["result"]
+    assert result["tariff_gaps"]["gaps"] == [{"start": "2024-07-01", "end": "2024-07-31"}]
+    # calendar year as billing period
+    assert (result["selected"]["start"], result["selected"]["label"]) == ("2025-01-01", "2025")
+    assert result["selected"]["payments_per_year"] == 11
