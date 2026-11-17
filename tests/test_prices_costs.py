@@ -394,3 +394,26 @@ async def test_bill_readings_and_cost_history(hass: HomeAssistant, ws) -> None:
     assert result["total"][-1]["label"] == "2026"
     msg = await ws("cost_history", meter_id="nope")
     assert msg["error"]["code"] == "not_found"
+
+
+async def test_reading_source_and_estimated_end(hass: HomeAssistant, ws) -> None:
+    """Readings from bills have source "bill"; an estimated end reading is not taken over."""
+    store = hass.data[DOMAIN]
+    meter = (await ws("meter/save", name="Wasser", meter_type="water", unit="m³"))["result"]
+    await ws("reading/save", meter_id=meter["id"], date="2025-11-01", value=640)
+    msg = await ws(
+        "bill/save",
+        meter_id=meter["id"],
+        start_date="2024-10-01",
+        end_date="2025-09-30",
+        total_cost=480.0,
+        reading_start=520,
+        reading_end=625,
+        reading_end_estimated=True,
+        take_readings=True,
+    )
+    assert msg["success"], msg
+    assert [(r["which"], r["status"]) for r in msg["result"]["imported_readings"]] == [("start", "added")]
+    assert msg["result"]["reading_end_estimated"] is True
+    readings = store.meter_readings(meter["id"])
+    assert [(r["date"], r["source"]) for r in readings] == [("2024-09-30", "bill"), ("2025-11-01", "manual")]

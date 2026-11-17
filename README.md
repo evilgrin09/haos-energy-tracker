@@ -123,10 +123,11 @@ Abrechnungen lassen sich für jeden Zeitraum erfassen, auch ohne Ablesungen oder
 1. Reiter **Abrechnung** → **Abrechnung erfassen**.
 2. Zeitraum, abgerechneten Verbrauch, Gesamtkosten und gezahlte Abschläge eintragen. Bei Gas den Verbrauch meist in kWh mit der Einheit „Abrechnungseinheit“.
 3. Optional die **Zählerstände laut Abrechnung** (Anfangs- und Endstand) und die **Preise laut Abrechnung** eintragen. Die Preise dienen nur der Kontrolle; gerechnet wird mit den Verträgen.
-4. Ist **„Anfangs- und Endstand als Ablesungen übernehmen“** angehakt, legt die Integration Ablesungen mit der Notiz „aus Abrechnung“ an:
+4. Ist **„Anfangs- und Endstand als Ablesungen übernehmen“** angehakt, legt die Integration Ablesungen an. Sie sind in der Liste der Zählerstände mit **„aus Abrechnung“** markiert (Herkunft `source: bill`):
    - Den Haken setzt das Formular automatisch, wenn für diese Tage noch keine Ablesungen existieren.
    - Der Anfangsstand gehört zum Tag vor Beginn des Zeitraums (Zählerstand bei Beginn), der Endstand zum letzten Tag.
    - Gibt es für einen Tag schon eine Ablesung, bleibt sie unverändert.
+   - Hat der Versorger den Endstand nur geschätzt, setzt du **„Endstand ist geschätzt“**. Dann wird nur der Anfangsstand übernommen.
    - Passt ein Stand nicht zu den vorhandenen Ablesungen (z. B. höher als eine spätere Ablesung), wird er nicht übernommen und als Hinweis angezeigt.
 5. Ältere **Verträge mit Preisänderungen** nachtragen. Dann rechnet die Integration auch die Jahre ohne erfasste Abrechnung.
 
@@ -217,6 +218,7 @@ Wie die Werte entstehen:
 - Jeder Tageswert wird gleichmäßig auf die Stunden des Tages verteilt. Eine genauere Verteilung über den Tag lässt sich aus manuellen Ablesungen nicht ableiten.
 - Die Statistik beginnt am Tag nach der ersten Ablesung und reicht bis zur letzten vollen Stunde. Sie wird stündlich fortgeschrieben.
 - Tage seit der letzten Ablesung sind zunächst Schätzwerte. Sobald du einen neuen Zählerstand erfasst, werden sie durch die gemessenen Werte ersetzt. Dasselbe gilt für rückwirkende oder korrigierte Ablesungen, Zählerwechsel und CSV-Importe: Die Statistik wird ab dem ersten betroffenen Tag neu geschrieben.
+- Kosten: Tage mit erfasster Abrechnung bekommen die Tageskosten aus der Abrechnung (dieselbe Verteilung wie in der Kostenentwicklung), alle anderen Tage die Kosten laut Tarif. Nach dem Speichern oder Löschen einer Abrechnung wird die Kostenstatistik ab dem betroffenen Tag neu geschrieben.
 - Wähle im Energie-Dashboard **nicht** den Sensor „Zählerstand“. Er hat deshalb bewusst keine `state_class` mehr.
 
 ### Kostenentwicklung
@@ -231,9 +233,11 @@ Der Reiter **Kosten** zeigt die Kosten über alle Jahre, für einen Zähler oder
   - „berechnet“: aus Ablesungen und Tarifen
   - „laut Abrechnung“: aus einer erfassten Abrechnung
   - „gemischt“: beides, z. B. im Kalenderjahr, wenn die Abrechnung nur Januar bis September abdeckt
-- **Vorrang der Abrechnung:** Liegt für einen Zeitraum eine Abrechnung mit Gesamtkosten vor, gelten deren Werte. Die Kosten werden dafür auf die Tage verteilt: der Arbeitspreis-Anteil nach dem Verbrauchsprofil, der Grundpreis gleichmäßig. Den Grundpreis-Anteil nimmt die Integration aus dem Grundpreis der Abrechnung, sonst aus dem Tarif.
+- **Vorrang der Abrechnung:** Liegt für einen Zeitraum eine Abrechnung mit Gesamtkosten vor, gelten deren Werte, in der Kostenentwicklung und in der Kostenstatistik fürs Energie-Dashboard. Die Kosten werden dafür auf die Tage verteilt: der Arbeitspreis-Anteil nach dem Verbrauchsprofil, der Grundpreis gleichmäßig.
+- **Aufteilung Arbeits-/Grundpreis:** Den Grundpreis-Anteil nimmt die Integration aus dem Grundpreis der Abrechnung, sonst aus dem Tarif, wenn er den ganzen Zeitraum abdeckt. Ist beides nicht vorhanden, bleibt die Aufteilung **unbekannt**: Das Diagramm zeigt dann einen einfarbigen Balken „Gesamt“, die Tabelle beim Grundpreis „?“.
 - **Lücken statt 0 €:** Jahre ohne Daten (vor der ersten Ablesung bzw. Abrechnung) oder ohne Tarif erscheinen als gestrichelter, leerer Balken mit „keine Daten“ bzw. „kein Tarif“.
-- **Unvollständige Jahre** (nur teilweise mit Tarif) sind mit „!“ und dem abgedeckten Anteil markiert. Für sie gibt es keinen Durchschnittspreis und keinen Vorjahresvergleich.
+- **Kleine Lücken am Rand eines Jahres:** Fehlen am Anfang oder Ende eines Jahres höchstens 7 Tage (z. B. erste Ablesung am 01.01.), werden diese Tage mit dem Tagesdurchschnitt der benachbarten 7 Tage geschätzt. Das Jahr gilt dann als vollständig, mit dem Hinweis „x Tage geschätzt“.
+- **Unvollständige Jahre** (größere Lücken oder Lücken mitten im Jahr) sind mit „!“ und dem abgedeckten Anteil markiert. Für sie gibt es keinen Durchschnittspreis und keinen Vorjahresvergleich.
 - **Ergebnis** (Erstattung/Nachzahlung) gibt es nur beim Abrechnungsjahr: aus der Abrechnung oder, für vollständig berechnete Jahre, als Abschläge − Kosten.
 - In der Summe aller Zähler werden nur Kosten addiert, nicht der Verbrauch (unterschiedliche Einheiten). Jahre, in denen ein Zähler fehlt, sind als unvollständig markiert.
 - **CSV-Export** der Tabelle über „Tabelle als CSV exportieren“.
@@ -243,7 +247,7 @@ Dieselben Daten liefert der Websocket-Befehl `energy_tracker/cost_history` (Para
 ### CSV-Export
 
 - **Zählerstände eines Zählers:** Reiter „Zählerstände“ → „Import / Export“ → „CSV exportieren“. Die Datei lässt sich über den Import wieder einlesen.
-- **Alle Zähler:** an derselben Stelle „Alle Zähler exportieren (CSV)“. Enthält zusätzlich Zählername, Zählernummer, Art, Einheit sowie Verbrauch und Tage seit der vorherigen Ablesung.
+- **Alle Zähler:** an derselben Stelle „Alle Zähler exportieren (CSV)“. Enthält zusätzlich Zählername, Zählernummer, Art, Einheit, Verbrauch und Tage seit der vorherigen Ablesung sowie die Herkunft (`manual` oder `bill`).
 - **Auswertung:** Reiter „Auswertung“ → „Tabelle als CSV exportieren“. Enthält den gerade angezeigten Zeitraum mit gemessenem, geschätztem und prognostiziertem Verbrauch, Kosten und, falls gewählt, den Vergleichswerten.
 
 Die Dateien nutzen Semikolon als Trennzeichen und bei deutscher Spracheinstellung das Dezimalkomma, sodass Excel sie direkt öffnet.

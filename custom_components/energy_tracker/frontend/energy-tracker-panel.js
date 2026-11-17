@@ -17,6 +17,12 @@ const STRINGS = {
     tab_readings: "Zählerstände",
     tab_contracts: "Abrechnung",
     tab_costs: "Kosten",
+    total_unsplit: "Gesamt (Aufteilung unbekannt)",
+    split_unknown: "Aufteilung in Arbeits- und Grundpreis unbekannt",
+    days_estimated: "{n} Tage geschätzt",
+    from_bill: "aus Abrechnung",
+    reading_end_estimated: "Endstand ist geschätzt (wird nicht als Ablesung übernommen)",
+    estimated_short: "geschätzt",
     price_changes: "Preisänderungen",
     unit_price_short: "Arbeitspreis/Einheit",
     base_price_short: "Grundpreis/Monat",
@@ -344,6 +350,12 @@ const STRINGS = {
     tab_readings: "Readings",
     tab_contracts: "Billing",
     tab_costs: "Costs",
+    total_unsplit: "Total (split unknown)",
+    split_unknown: "Split into energy and base cost unknown",
+    days_estimated: "{n} days estimated",
+    from_bill: "from bill",
+    reading_end_estimated: "End reading is estimated (not taken over as reading)",
+    estimated_short: "estimated",
     price_changes: "Price changes",
     unit_price_short: "Unit price",
     base_price_short: "Base price/month",
@@ -877,7 +889,7 @@ function renderCostChart(width, height, spec, opts) {
   const w = Math.max(width - pad.l - pad.r, 50);
   const h = height - pad.t - pad.b;
   const n = spec.years.length || 1;
-  const max = Math.max(0, ...spec.years.map((y) => (y.energy || 0) + (y.base || 0)));
+  const max = Math.max(0, ...spec.years.map((y) => (y.split ? (y.energy || 0) + (y.base || 0) : y.total || 0)));
   const scale = niceScale(max);
   const y = (v) => pad.t + h - (v / scale.max) * h;
   const gw = w / n;
@@ -896,10 +908,17 @@ function renderCostChart(width, height, spec, opts) {
         <text x="${cx}" y="${pad.t + h * 0.35 + 16}" class="axis gap-text" text-anchor="middle">${esc(yr.gapText)}</text>`;
     } else {
       const op = yr.forecast ? 0.45 : 1;
-      const top1 = y(yr.energy);
-      svg += `<rect x="${x0}" y="${top1}" width="${bw}" height="${Math.max(0, y(0) - top1)}" fill="${color}" opacity="${op}"></rect>`;
-      const top2 = y(yr.energy + yr.base);
-      svg += `<rect x="${x0}" y="${top2}" width="${bw}" height="${Math.max(0, top1 - top2)}" fill="${color}" opacity="${op * 0.45}"></rect>`;
+      let top2;
+      if (yr.split) {
+        const top1 = y(yr.energy);
+        svg += `<rect x="${x0}" y="${top1}" width="${bw}" height="${Math.max(0, y(0) - top1)}" fill="${color}" opacity="${op}"></rect>`;
+        top2 = y(yr.energy + yr.base);
+        svg += `<rect x="${x0}" y="${top2}" width="${bw}" height="${Math.max(0, top1 - top2)}" fill="${color}" opacity="${op * 0.45}"></rect>`;
+      } else {
+        // split into energy and base cost unknown: one bar for the total
+        top2 = y(yr.total);
+        svg += `<rect x="${x0}" y="${top2}" width="${bw}" height="${Math.max(0, y(0) - top2)}" fill="${color}" opacity="${op * 0.75}" class="unsplit-bar"></rect>`;
+      }
       if (yr.forecast) {
         svg += `<rect x="${x0}" y="${top2}" width="${bw}" height="${Math.max(0, y(0) - top2)}" fill="none" stroke="${color}" stroke-dasharray="4 3" stroke-width="1.5"></rect>`;
       }
@@ -2067,7 +2086,7 @@ class EnergyTrackerPanel extends HTMLElement {
           since = `${this._num(diff, 2)} ${u} <span class="muted">(${this._num(diff / days, 2)} ${u}/d)</span>`;
         }
         rows.push(`<tr class="${r.id === s.editReading ? "editing" : ""}"><td>${this._date(r.date)}</td>
-          <td class="num"><strong>${this._num(r.value, 2)}</strong> ${r.reset ? `<span class="badge q-low">${esc(this._t("replaced_short"))}</span>` : ""}</td>
+          <td class="num"><strong>${this._num(r.value, 2)}</strong> ${r.reset ? `<span class="badge q-low">${esc(this._t("replaced_short"))}</span>` : ""}${r.source === "bill" ? ` <span class="badge source-bill" title="${esc(r.note || "")}">${esc(this._t("from_bill"))}</span>` : ""}</td>
           <td class="num">${since}</td><td>${esc(r.note || "")}</td>
           <td class="actions">${r.photo ? `<button class="icon" data-action="view-photo" data-id="${r.id}" title="${esc(this._t("view_photo"))}"><ha-icon icon="mdi:image"></ha-icon></button>` : ""}<button class="icon admin-only" data-action="edit-reading" data-id="${r.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
           <button class="icon admin-only" data-action="delete-reading" data-id="${r.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button></td></tr>`);
@@ -2259,7 +2278,7 @@ class EnergyTrackerPanel extends HTMLElement {
         ${bill.total_cost !== null && bill.total_cost !== undefined ? `<span>${esc(this._t("total_cost"))}: <strong>${this._money(bill.total_cost)}</strong></span>` : ""}
         ${bill.advances_paid !== null && bill.advances_paid !== undefined ? `<span>${esc(this._t("advances"))}: <strong>${this._money(bill.advances_paid)}</strong></span>` : ""}
         ${bill.reading_start !== null && bill.reading_start !== undefined ? `<span>${esc(this._t("reading_bill_start"))}: <strong>${this._num(bill.reading_start, 2)}</strong></span>` : ""}
-        ${bill.reading_end !== null && bill.reading_end !== undefined ? `<span>${esc(this._t("reading_bill_end"))}: <strong>${this._num(bill.reading_end, 2)}</strong></span>` : ""}
+        ${bill.reading_end !== null && bill.reading_end !== undefined ? `<span>${esc(this._t("reading_bill_end"))}: <strong>${this._num(bill.reading_end, 2)}</strong>${bill.reading_end_estimated ? ` (${esc(this._t("estimated_short"))})` : ""}</span>` : ""}
         ${bill.unit_price ? `<span>${esc(this._t("energy_cost"))}: <strong>${this._num(bill.unit_price, 4)} ${esc(this._currencySymbol)}</strong></span>` : ""}
         ${bill.base_price ? `<span>${esc(this._t("base_cost"))}: <strong>${this._money(bill.base_price)} ${esc(this._t("per_month"))}</strong></span>` : ""}
         ${bill.new_advance !== null && bill.new_advance !== undefined ? `<span>${esc(this._t("new_advance"))}: <strong>${this._money(bill.new_advance)}</strong>${bill.new_advance_from ? ` ${esc(this._t("advance_from"))} ${this._date(bill.new_advance_from)}` : ""}</span>` : ""}
@@ -2394,6 +2413,7 @@ class EnergyTrackerPanel extends HTMLElement {
             <span>${esc(this._t("reading_bill_start"))}</span><input ${dec} name="reading_start" value="${num("reading_start")}">
             <span>${esc(this._t("reading_bill_end"))}</span><input ${dec} name="reading_end" value="${num("reading_end")}">
           </div>
+          <label class="check"><input type="checkbox" name="reading_end_estimated" ${bill?.reading_end_estimated ? "checked" : ""}> <small>${esc(this._t("reading_end_estimated"))}</small></label>
           <label class="check"><input type="checkbox" name="take_readings" ${takeDefault ? "checked" : ""}> <small>${esc(this._t("take_readings"))}</small></label>
         </fieldset>
         <fieldset class="wide changes"><legend>${esc(this._t("bill_prices"))}</legend>
@@ -2438,6 +2458,7 @@ class EnergyTrackerPanel extends HTMLElement {
       <div class="legend">
         <span><i style="background:${color}"></i>${esc(this._t("energy_cost"))}</span>
         <span><i style="background:${color};opacity:.45"></i>${esc(this._t("base_cost"))}</span>
+        ${years.some((y) => y.total_cost !== null && y.split_known === false) ? `<span><i class="unsplit-swatch" style="--c:${color}"></i>${esc(this._t("total_unsplit"))}</span>` : ""}
         <span><i class="forecast-swatch" style="--c:${color}"></i>${esc(this._t("forecast_year_note"))}</span>
         ${single && s.costLine ? `<span><i class="line-swatch"></i>${esc(this._t("consumption"))} (${esc(meter.unit)})</span>` : ""}
       </div>
@@ -2454,6 +2475,8 @@ class EnergyTrackerPanel extends HTMLElement {
         label: y.label,
         energy: y.energy_cost || 0,
         base: y.base_cost || 0,
+        total: y.total_cost || 0,
+        split: y.split_known !== false,
         gap: y.total_cost === null,
         gapText: this._t(`gap_${y.gap_reason || "no_data"}`),
         forecast: y.forecast,
@@ -2477,9 +2500,13 @@ class EnergyTrackerPanel extends HTMLElement {
     if (year.total_cost === null) {
       return html + `<div>${esc(this._t(`gap_${year.gap_reason || "no_data"}`))}</div>`;
     }
-    html += `<div>${esc(this._t("total_cost"))}: <strong>${this._money(year.total_cost)}</strong></div>
-      <div>${esc(this._t("energy_cost"))}: ${this._money(year.energy_cost)}</div>
+    html += `<div>${esc(this._t("total_cost"))}: <strong>${this._money(year.total_cost)}</strong></div>`;
+    html +=
+      year.split_known === false
+        ? `<div class="muted">${esc(this._t("split_unknown"))}</div>`
+        : `<div>${esc(this._t("energy_cost"))}: ${this._money(year.energy_cost)}</div>
       <div>${esc(this._t("base_cost"))}: ${this._money(year.base_cost)}</div>`;
+    if (year.estimated_days) html += `<div class="muted">${esc(this._t("days_estimated", { n: year.estimated_days }))}</div>`;
     if (meter && year.consumption !== null) html += `<div>${esc(this._t("consumption"))}: ${this._auto(year.consumption)} ${esc(meter.unit)}</div>`;
     if (year.change !== null && year.change !== undefined) html += `<div>${esc(this._t("change_prev"))}: ${year.change > 0 ? "+" : ""}${this._money(year.change)}</div>`;
     html += `<div class="muted">${esc(this._t("source"))}: ${this._costSource(year)}${year.status === "partial" && year.cost_coverage !== undefined ? ` · ${esc(this._t("covered", { p: this._num(year.cost_coverage * 100, 0) }))}` : ""}</div>`;
@@ -2515,16 +2542,17 @@ class EnergyTrackerPanel extends HTMLElement {
       .map((r) => {
         const y = r.year;
         const cls = [y.forecast ? "forecast-row" : "", y.total_cost === null ? "gap-row" : ""].join(" ");
-        const partial =
+        let partial =
           y.status === "partial"
             ? `<div class="warn-text small">${esc(r.incomplete.length ? this._t("incomplete_meters", { names: r.incomplete.join(", ") }) : this._t("covered", { p: this._num((r.coverage || 0) * 100, 0) }))}</div>`
             : "";
+        if (y.estimated_days) partial += `<div class="muted small">${esc(this._t("days_estimated", { n: y.estimated_days }))}</div>`;
         const avg = r.avg === null ? "–" : r.avgUnit === "ct/kWh" ? `${this._num(r.avg, 2)} ct/kWh` : `${this._money(r.avg)}/${esc(r.avgUnit.replace("€/", ""))}`;
         return `<tr class="${cls}"><td>${esc(r.label)}</td>
           <td><span class="badge source-${y.source || "gap"}">${esc(r.source)}</span></td>
           ${meter ? `<td class="num">${r.consumption === null ? "–" : `${this._auto(r.consumption)} ${esc(meter.unit)}`}</td>` : ""}
           <td class="num"><strong>${r.total === null ? "–" : this._money(r.total)}</strong>${partial}</td>
-          <td class="num">${r.base === null ? "–" : this._money(r.base)}</td>
+          <td class="num">${r.base === null ? (r.total !== null && y.split_known === false ? `<span class="muted small" title="${esc(this._t("split_unknown"))}">?</span>` : "–") : this._money(r.base)}</td>
           ${meter ? `<td class="num">${avg}</td>` : ""}
           <td class="num">${r.change === null ? "–" : `${r.change > 0 ? "+" : ""}${this._money(r.change)}`}</td>
           <td class="num">${r.changePct === null ? "–" : this._delta(r.total, r.total - r.change)}</td>
@@ -2548,7 +2576,7 @@ class EnergyTrackerPanel extends HTMLElement {
     const single = this._state.costMeter !== "all";
     const meter = single ? data.meters[0] : null;
     const years = single ? meter.years : data.total;
-    const header = ["year", "start", "end", "forecast", "source", "status", "consumption", "unit", "total_cost", "energy_cost", "base_cost", "avg_price", "avg_price_unit", "change", "change_pct", "advances", "result", "cost_coverage_pct"];
+    const header = ["year", "start", "end", "forecast", "source", "status", "consumption", "unit", "total_cost", "energy_cost", "base_cost", "avg_price", "avg_price_unit", "change", "change_pct", "advances", "result", "cost_coverage_pct", "split_known", "estimated_days"];
     const rows = [header];
     for (const y of years) {
       rows.push([
@@ -2570,6 +2598,8 @@ class EnergyTrackerPanel extends HTMLElement {
         this._csvNum(y.advances ?? null),
         this._csvNum(y.result ?? null),
         y.cost_coverage === undefined ? "" : this._csvNum(y.cost_coverage * 100),
+        y.split_known === false ? 0 : 1,
+        y.estimated_days || 0,
       ]);
     }
     this._download(`kosten_${meter ? meter.name : "alle"}_${data.mode}_${this._data.today}`, rows);
@@ -3033,6 +3063,7 @@ class EnergyTrackerPanel extends HTMLElement {
         new_advance_from: data.new_advance_from || null,
         reading_start: num("reading_start"),
         reading_end: num("reading_end"),
+        reading_end_estimated: Boolean(form.elements.reading_end_estimated?.checked),
         unit_price: num("unit_price"),
         base_price: num("base_price"),
         conversion_factor: data.conversion_factor === undefined ? undefined : num("conversion_factor"),
@@ -3132,7 +3163,7 @@ class EnergyTrackerPanel extends HTMLElement {
 
   /** Readings of all meters including the consumption since the previous reading. */
   _exportAllCsv() {
-    const rows = [["meter", "meter_number", "type", "unit", "date", "value", "reset", "consumption", "days", "note"]];
+    const rows = [["meter", "meter_number", "type", "unit", "date", "value", "reset", "consumption", "days", "note", "source"]];
     for (const meter of this._data.meters) {
       let prev = null;
       for (const r of this._sortedReadings(meter.id)) {
@@ -3148,6 +3179,7 @@ class EnergyTrackerPanel extends HTMLElement {
           usable ? this._csvNum(r.value - prev.value) : "",
           usable ? daysBetween(prev.date, r.date) : "",
           r.note || "",
+          r.source || "manual",
         ]);
         prev = r;
       }
@@ -3285,6 +3317,7 @@ const STYLE = `
   tr.editing td { background:var(--secondary-background-color); }
   details summary { cursor:pointer; font-weight:500; }
   .readonly .admin-only { display:none !important; }
+  .legend i.unsplit-swatch { background:repeating-linear-gradient(90deg, var(--c) 0 6px, transparent 6px 7px); opacity:.75; }
   .chart .gap-bar { fill:none; stroke:var(--secondary-text-color); stroke-dasharray:4 4; opacity:.6; }
   .chart .gap-text { font-size:10px; }
   .chart .warn-fill { fill:var(--warning-color, #e65100); font-weight:bold; }

@@ -45,15 +45,37 @@ STATUS_GAP = "gap"
 MODES = ("calendar", "billing")
 
 
+# Missing days at the beginning or end of a year (e.g. first reading on
+# 01.01.) are estimated from the neighbouring days if there are at most so many.
+MAX_EDGE_GAP_DAYS = 7
+NEIGHBOUR_DAYS = 7
+
+KIND_BILL = "bill"
+KIND_OWN = "own"
+KIND_NO_TARIFF = "no_tariff"
+KIND_NO_DATA = "no_data"
+KIND_ESTIMATED = "estimated"
+
+
 @dataclass(slots=True)
 class BillDay:
-    """Share of a bill on one day."""
+    """Share of a bill on one day.
+
+    ``energy_cost``/``base_cost`` are None if the bill states neither a base
+    price nor is the period fully covered by a tariff (split unknown).
+    """
 
     bill_id: str
-    energy_cost: float
-    base_cost: float
+    total_cost: float
+    energy_cost: float | None
+    base_cost: float | None
     consumption: float
     consumption_billing: float
+
+    @property
+    def split_known(self) -> bool:
+        """True if energy and base cost are known separately."""
+        return self.energy_cost is not None
 
 
 def _num(value: Any) -> float | None:
@@ -65,8 +87,9 @@ def bill_days(
 ) -> dict[date, BillDay]:
     """Distribute the recorded bills over their days.
 
-    Bills without total cost are ignored.  If bills overlap, the later one
-    (by end date) wins.
+    The energy part follows the daily consumption of the model (seasonal
+    profile), the base part is spread evenly.  Bills without total cost are
+    ignored.  If bills overlap, the later one (by end date) wins.
     """
     result: dict[date, BillDay] = {}
     for bill in sorted(bills, key=lambda b: (b["end_date"], b["start_date"])):
@@ -89,26 +112,160 @@ def bill_days(
         base_price = _num(bill.get("base_price"))
         if base_price is not None:
             base_total: float | None = base_price * 12 / 365 * days
-        elif all(find_tariff(tariffs, d) for d, _, _ in series):
+        elif series and all(find_tariff(tariffs, d) for d, _, _ in series):
             base_total = math.fsum(
                 find_tariff(tariffs, d).phase_at(d).base_price * 12 / 365  # type: ignore[union-attr]
                 for d, _, _ in series
             )
         else:
-            base_total = None
-        energy_total = total - base_total if base_total is not None else total
+            base_total = None  # split into energy and base cost unknown
 
         for d, value, _kind in series:
             weight = value / own_total if own_total > 0 else 1 / days
             day_consumption = consumption * weight if consumption is not None else value
+            if base_total is None:
+                day_total = total * weight
+                energy, base = None, None
+            else:
+                energy = (total - base_total) * weight
+                base = base_total / days
+                day_total = energy + base
             result[d] = BillDay(
                 bill_id=bill["id"],
-                energy_cost=energy_total * weight,
-                base_cost=(base_total / days) if base_total is not None else 0.0,
+                total_cost=day_total,
+                energy_cost=energy,
+                base_cost=base,
                 consumption=day_consumption,
                 consumption_billing=day_consumption * factor,
             )
     return result
+
+
+@dataclass(slots=True)
+class _Day:
+    """Consumption and cost of one day of a year."""
+
+    kind: str
+    total: float | None = None
+    energy: float | None = None
+    base: float | None = None
+    consumption: float | None = None
+    consumption_billing: float | None = None
+    measured: float = 0.0
+    forecast: float = 0.0
+    bill_id: str | None = None
+
+    @property
+    def has_cost(self) -> bool:
+        return self.total is not None
+
+
+def _day_records(
+    model: ConsumptionModel,
+    tariffs: list[Tariff],
+    shares: dict[date, BillDay],
+    period: tuple[date, date],
+    today: date,
+    data_start: date | None,
+) -> tuple[list[_Day], bool]:
+    """One record per day of the period and whether a conversion factor is used."""
+    records: list[_Day] = []
+    uses_factor = False
+    for d in daterange(*period):
+        if (share := shares.get(d)) is not None:
+            uses_factor = uses_factor or abs(share.consumption_billing - share.consumption) > 1e-9
+            records.append(
+                _Day(
+                    kind=KIND_BILL,
+                    total=share.total_cost,
+                    energy=share.energy_cost,
+                    base=share.base_cost,
+                    consumption=share.consumption,
+                    consumption_billing=share.consumption_billing,
+                    measured=share.consumption,
+                    bill_id=share.bill_id,
+                )
+            )
+            continue
+        if data_start is None or d < data_start:
+            records.append(_Day(kind=KIND_NO_DATA))  # neither readings nor a bill
+            continue
+        value, kind = model.day(d, today)
+        tariff = find_tariff(tariffs, d)
+        reference = tariff or nearest_tariff(tariffs, d)
+        factor = reference.factor_at(d) if reference else 1.0
+        uses_factor = uses_factor or factor != 1.0
+        record = _Day(
+            kind=KIND_NO_TARIFF,
+            consumption=value,
+            consumption_billing=value * factor,
+            measured=value if kind == MEASURED else 0.0,
+            forecast=value if kind == FORECAST else 0.0,
+        )
+        if tariff is not None:
+            phase = tariff.phase_at(d)
+            record.kind = KIND_OWN
+            record.energy = value * phase.conversion_factor * phase.unit_price
+            record.base = phase.base_price * 12 / 365
+            record.total = record.energy + record.base
+        records.append(record)
+    return records, uses_factor
+
+
+def _average(days: list[_Day], attr: str) -> float | None:
+    values = [getattr(day, attr) for day in days]
+    if not values or any(value is None for value in values):
+        return None
+    return math.fsum(values) / len(values)
+
+
+def _fill_edge_gaps(records: list[_Day]) -> int:
+    """Estimate up to MAX_EDGE_GAP_DAYS missing days at the start and end of a year.
+
+    Missing means: no cost (no data or no tariff).  Only if there are no
+    missing days in between.  The estimate is the daily average of the
+    neighbouring known days.  Returns the number of estimated days.
+    """
+    missing = [i for i, day in enumerate(records) if not day.has_cost]
+    if not missing or len(missing) == len(records):
+        return 0
+    lead = 0
+    while lead < len(records) and not records[lead].has_cost:
+        lead += 1
+    trail = 0
+    while trail < len(records) and not records[-1 - trail].has_cost:
+        trail += 1
+    if lead + trail != len(missing) or lead > MAX_EDGE_GAP_DAYS or trail > MAX_EDGE_GAP_DAYS:
+        return 0
+    groups = []
+    if lead:
+        groups.append((range(lead), records[lead : lead + NEIGHBOUR_DAYS]))
+    if trail:
+        groups.append((range(len(records) - trail, len(records)), records[-trail - NEIGHBOUR_DAYS : -trail]))
+    for indexes, neighbours in groups:
+        estimate = {
+            attr: _average(neighbours, attr)
+            for attr in ("total", "energy", "base", "consumption", "consumption_billing")
+        }
+        for index in indexes:
+            day = records[index]
+            # keep a known consumption (days without tariff), estimate the rest
+            consumption = day.consumption if day.consumption is not None else estimate["consumption"]
+            consumption_billing = (
+                day.consumption_billing
+                if day.consumption_billing is not None
+                else estimate["consumption_billing"]
+            )
+            records[index] = _Day(
+                kind=KIND_ESTIMATED,
+                total=estimate["total"],
+                energy=estimate["energy"],
+                base=estimate["base"],
+                consumption=consumption,
+                consumption_billing=consumption_billing,
+                forecast=day.forecast,
+            )
+    return lead + trail
 
 
 def period_costs(
@@ -122,70 +279,52 @@ def period_costs(
 ) -> dict[str, Any]:
     """Consumption and cost of one year (calendar or billing year)."""
     start, end = period
-    energy = base = consumption = consumption_billing = measured = forecast = 0.0
-    bill_count = own_count = no_tariff = 0
-    bill_ids: set[str] = set()
-    uses_factor = False
-    for d in daterange(start, end):
-        if (share := shares.get(d)) is not None:
-            bill_count += 1
-            bill_ids.add(share.bill_id)
-            energy += share.energy_cost
-            base += share.base_cost
-            consumption += share.consumption
-            consumption_billing += share.consumption_billing
-            measured += share.consumption
-            uses_factor = uses_factor or abs(share.consumption_billing - share.consumption) > 1e-9
-            continue
-        if data_start is None or d < data_start:
-            continue  # no data: neither readings nor a bill
-        value, kind = model.day(d, today)
-        tariff = find_tariff(tariffs, d)
-        reference = tariff or nearest_tariff(tariffs, d)
-        factor = reference.factor_at(d) if reference else 1.0
-        uses_factor = uses_factor or factor != 1.0
-        consumption += value
-        consumption_billing += value * factor
-        if kind == MEASURED:
-            measured += value
-        elif kind == FORECAST:
-            forecast += value
-        if tariff is None:
-            no_tariff += 1
-            continue
-        own_count += 1
-        phase = tariff.phase_at(d)
-        energy += value * phase.conversion_factor * phase.unit_price
-        base += phase.base_price * 12 / 365
+    records, uses_factor = _day_records(model, tariffs, shares, period, today, data_start)
+    estimated_days = _fill_edge_gaps(records)
 
-    days = (end - start).days + 1
-    cost_days = bill_count + own_count
-    data_days = cost_days + no_tariff
-    if cost_days == 0:
+    days = len(records)
+    cost_days = [r for r in records if r.has_cost]
+    data_days = [r for r in records if r.consumption is not None]
+    bill_count = sum(1 for r in records if r.kind == KIND_BILL)
+    own_count = sum(1 for r in records if r.kind == KIND_OWN)
+    if not cost_days:
         status = STATUS_GAP
-    elif cost_days < days:
+    elif len(cost_days) < days:
         status = STATUS_PARTIAL
     else:
         status = STATUS_COMPLETE
     if not cost_days:
         source = None
     elif not own_count:
-        source = SOURCE_BILL
+        source = SOURCE_BILL if bill_count else SOURCE_CALCULATED
     elif not bill_count:
         source = SOURCE_CALCULATED
     else:
         source = SOURCE_MIXED
-    total_cost = energy + base if cost_days else None
+
+    total_cost = math.fsum(r.total for r in cost_days) if cost_days else None  # type: ignore[misc]
+    split_known = bool(cost_days) and all(r.energy is not None for r in cost_days)
+    energy = math.fsum(r.energy for r in cost_days) if split_known else None  # type: ignore[misc]
+    base = math.fsum(r.base for r in cost_days) if split_known else None  # type: ignore[misc]
+    consumption = math.fsum(r.consumption for r in data_days) if data_days else None  # type: ignore[misc]
+    consumption_billing = (
+        math.fsum(r.consumption_billing for r in data_days) if data_days else None  # type: ignore[misc]
+    )
+    measured = math.fsum(r.measured for r in records)
+    forecast = math.fsum(r.forecast for r in records)
 
     # average price per unit including the base price
+    avg_price = None
     if meter_unit in ("kWh", "MWh") or uses_factor:
-        kwh = consumption_billing * (1000 if meter_unit == "MWh" else 1)
         avg_unit = "ct/kWh"
-        avg_price = total_cost * 100 / kwh if total_cost is not None and kwh > 0 else None
+        if total_cost is not None and consumption_billing:
+            kwh = consumption_billing * (1000 if meter_unit == "MWh" else 1)
+            avg_price = total_cost * 100 / kwh
     else:
         avg_unit = f"€/{meter_unit}"
-        avg_price = total_cost / consumption if total_cost is not None and consumption > 0 else None
-    # the average price is only meaningful if cost and consumption cover the same days
+        if total_cost is not None and consumption:
+            avg_price = total_cost / consumption
+    # only meaningful if cost and consumption cover the same (all) days
     if status != STATUS_COMPLETE:
         avg_price = None
 
@@ -198,18 +337,20 @@ def period_costs(
         "gap_reason": (GAP_NO_TARIFF if data_days else GAP_NO_DATA) if status == STATUS_GAP else None,
         "source": source,
         "forecast": end > today,
-        "consumption": consumption if data_days else None,
-        "consumption_billing": consumption_billing if data_days else None,
+        "estimated_days": estimated_days,
+        "consumption": consumption,
+        "consumption_billing": consumption_billing,
         "consumption_forecast": forecast,
         "measured_share": measured / consumption if consumption else 0.0,
-        "energy_cost": energy if cost_days else None,
-        "base_cost": base if cost_days else None,
+        "split_known": split_known,
+        "energy_cost": energy,
+        "base_cost": base,
         "total_cost": total_cost,
-        "cost_coverage": cost_days / days,
-        "data_coverage": data_days / days,
+        "cost_coverage": len(cost_days) / days,
+        "data_coverage": len(data_days) / days,
         "avg_price": avg_price,
         "avg_price_unit": avg_unit,
-        "bill_ids": sorted(bill_ids),
+        "bill_ids": sorted({r.bill_id for r in records if r.bill_id}),
     }
 
 
@@ -294,6 +435,8 @@ def sum_years(per_meter: list[tuple[str, list[dict[str, Any]]]]) -> list[dict[st
                     "end": year["end"],
                     "energy_cost": 0.0,
                     "base_cost": 0.0,
+                    "split_known": True,
+                    "estimated_days": 0,
                     "total_cost": 0.0,
                     "advances": None,
                     "result": None,
@@ -311,8 +454,12 @@ def sum_years(per_meter: list[tuple[str, list[dict[str, Any]]]]) -> list[dict[st
             else:
                 entry["incomplete"].append(name)
             if year["total_cost"] is not None:
-                entry["energy_cost"] += year["energy_cost"]
-                entry["base_cost"] += year["base_cost"]
+                if year["split_known"]:
+                    entry["energy_cost"] += year["energy_cost"]
+                    entry["base_cost"] += year["base_cost"]
+                else:
+                    entry["split_known"] = False
+                entry["estimated_days"] = max(entry["estimated_days"], year.get("estimated_days", 0))
                 entry["total_cost"] += year["total_cost"]
                 entry["sources"].add(year["source"])
             for key in ("advances", "result"):
@@ -335,8 +482,9 @@ def sum_years(per_meter: list[tuple[str, list[dict[str, Any]]]]) -> list[dict[st
             "status": status,
             "gap_reason": None,
             "source": (next(iter(sources)) if len(sources) == 1 else SOURCE_MIXED) if has_cost else None,
-            "energy_cost": entry["energy_cost"] if has_cost else None,
-            "base_cost": entry["base_cost"] if has_cost else None,
+            "split_known": has_cost and entry["split_known"],
+            "energy_cost": entry["energy_cost"] if has_cost and entry["split_known"] else None,
+            "base_cost": entry["base_cost"] if has_cost and entry["split_known"] else None,
             "total_cost": entry["total_cost"] if has_cost else None,
             "consumption": None,
             "avg_price": None,

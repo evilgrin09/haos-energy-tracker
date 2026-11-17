@@ -4,10 +4,10 @@ from __future__ import annotations
 
 DOMAIN = "energy_tracker"
 NAME = "Energy Tracker"
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 STORAGE_KEY = f"{DOMAIN}.data"
-STORAGE_VERSION = 3
+STORAGE_VERSION = 4
 
 PANEL_URL_PATH = "energy-tracker"
 PANEL_COMPONENT = "energy-tracker-panel"

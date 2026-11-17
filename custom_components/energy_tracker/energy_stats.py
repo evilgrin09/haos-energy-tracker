@@ -26,6 +26,7 @@ from homeassistant.util import dt as dt_util
 
 from .calc import find_tariff
 from .const import DOMAIN
+from .costs import bill_days
 from .store import TrackerStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,7 +97,9 @@ def daily_values(
     """Return start day, daily consumption and daily cost of a meter.
 
     The series starts on the day after the first reading and ends today.
-    Cost is None if the meter has no contract.
+    For days covered by a recorded bill the cost comes from the bill (the
+    same distribution as in the cost history), otherwise from the tariff.
+    Cost is None if the meter has neither a contract nor a bill with cost.
     """
     model = store.model(meter_id)
     if model.first_day is None:
@@ -105,13 +108,17 @@ def daily_values(
     if start > today:
         return None
     tariffs = store.tariffs(meter_id)
+    shares = bill_days(model, tariffs, store.meter_bills(meter_id), today)
     consumption: list[float] = []
     cost: list[float] = []
     for day, value, _kind in model.series(start, today, today):
         consumption.append(value)
+        if (share := shares.get(day)) is not None:
+            cost.append(share.total_cost)
+            continue
         tariff = find_tariff(tariffs, day) if tariffs else None
         cost.append(tariff.day_cost(value, day) if tariff else 0.0)
-    return start, consumption, (cost if tariffs else None)
+    return start, consumption, (cost if tariffs or shares else None)
 
 
 @dataclass(slots=True)

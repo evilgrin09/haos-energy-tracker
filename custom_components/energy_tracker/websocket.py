@@ -94,6 +94,8 @@ BILL_SCHEMA = {
     # meter readings and prices according to the bill (information / control)
     vol.Optional("reading_start"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
     vol.Optional("reading_end"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
+    # the end reading of the bill is an estimate of the utility: not taken over
+    vol.Optional("reading_end_estimated"): cv.boolean,
     vol.Optional("unit_price"): _OPT_FLOAT,
     vol.Optional("base_price"): _OPT_FLOAT,
     vol.Optional("conversion_factor"): _OPT_FLOAT,

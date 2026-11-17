@@ -44,7 +44,10 @@ METER_FIELDS = (
     "billing_month",
     "forecast_method",
 )
-READING_FIELDS = ("meter_id", "date", "value", "reset", "note")
+READING_FIELDS = ("meter_id", "date", "value", "reset", "note", "source")
+# Origin of a reading: entered by hand / import ("manual") or taken from a bill
+SOURCE_MANUAL = "manual"
+SOURCE_BILL = "bill"
 CONTRACT_FIELDS = (
     "meter_id",
     "provider",
@@ -77,6 +80,7 @@ BILL_FIELDS = (
     "new_advance_from",
     "reading_start",
     "reading_end",
+    "reading_end_estimated",
     "unit_price",
     "base_price",
     "conversion_factor",
@@ -117,6 +121,12 @@ def migrate(old_version: int, data: dict[str, Any]) -> dict[str, Any]:
             contract.setdefault("first_payment", None)
             contract.setdefault("advance_changes", [])
         data.setdefault("bills", [])
+    if old_version < 4:
+        # Version 4: origin of readings; readings taken from bills are marked
+        for reading in data.get("readings", []):
+            if "source" not in reading:
+                from_bill = reading.get("note") == READING_NOTE_FROM_BILL
+                reading["source"] = SOURCE_BILL if from_bill else SOURCE_MANUAL
     if old_version < 3:
         # Version 3: price changes within a contract; bills keep their values
         for contract in data.get("contracts", []):
@@ -343,6 +353,7 @@ class TrackerStore:
                 "value": value,
                 "reset": reset,
                 "note": merged.get("note") or "",
+                "source": merged.get("source") or SOURCE_MANUAL,
             }
         )
         self.readings[reading["id"]] = reading
@@ -380,6 +391,7 @@ class TrackerStore:
                 "value": float(row["value"]),
                 "reset": reset,
                 "note": row.get("note") or "",
+                "source": SOURCE_MANUAL,
             }
             self.readings[reading["id"]] = reading
             existing.add((day, reset))
@@ -481,7 +493,12 @@ class TrackerStore:
         result: list[dict[str, Any]] = []
         candidates = (
             ("start", bill.get("reading_start"), parse_date(bill["start_date"]) - timedelta(days=1)),
-            ("end", bill.get("reading_end"), parse_date(bill["end_date"])),
+            # an estimated end reading of the utility is no real reading
+            (
+                "end",
+                None if bill.get("reading_end_estimated") else bill.get("reading_end"),
+                parse_date(bill["end_date"]),
+            ),
         )
         for which, value, day in candidates:
             if value is None:
@@ -503,6 +520,7 @@ class TrackerStore:
                             "date": day.isoformat(),
                             "value": float(value),
                             "note": READING_NOTE_FROM_BILL,
+                            "source": SOURCE_BILL,
                         }
                     )
                 except TrackerError as err:

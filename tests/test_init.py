@@ -323,7 +323,8 @@ async def test_storage_migration(hass: HomeAssistant, hass_storage, frozen_2026,
     assert previous["result"] == "no_tariff"
     assert previous["cost_coverage"] == 0
     await store.async_flush()
-    assert hass_storage[f"{DOMAIN}.data"]["version"] == 3
+    assert hass_storage[f"{DOMAIN}.data"]["version"] == 4
+    assert {r["source"] for r in hass_storage[f"{DOMAIN}.data"]["data"]["readings"]} == {"manual"}
     assert hass_storage[f"{DOMAIN}.data"]["data"]["contracts"][0]["price_changes"] == []
 
 

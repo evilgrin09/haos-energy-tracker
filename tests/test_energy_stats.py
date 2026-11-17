@@ -329,3 +329,49 @@ async def test_cost_rewritten_after_price_change(recorder_mock, hass: HomeAssist
     assert rows[5 * 24]["state"] == pytest.approx(2.0)
     assert rows[-1]["sum"] == pytest.approx(120.0 + (254 - 120) * 2.0)
     _assert_continuous(rows)
+
+
+async def test_cost_statistic_uses_bills(recorder_mock, hass: HomeAssistant, store) -> None:
+    """Days of a recorded bill get the bill's daily cost; deleting it restores the tariff."""
+    meter = _meter(store)
+    store.save_contract({"meter_id": meter["id"], "start_date": "2025-01-01", "unit_price": 1.0})
+    await _sync(hass)
+    sid = cost_statistic_id(meter["id"])
+    assert (await _rows(hass, sid))[-1]["sum"] == pytest.approx(254.0)
+
+    # bill for 21.-25.06. (5 days, 120 kWh measured): 300 EUR including 20 EUR base price
+    bill = store.save_bill(
+        {
+            "meter_id": meter["id"],
+            "start_date": "2025-06-21",
+            "end_date": "2025-06-25",
+            "total_cost": 300.0,
+            "base_price": 20 * 365 / 12 / 5,
+        }
+    )
+    await _sync(hass)
+    rows = await _rows(hass, sid)
+    assert len(rows) == 254
+    assert rows[0]["state"] == pytest.approx(300 / 120)
+    assert rows[5 * 24 - 1]["sum"] == pytest.approx(300.0)
+    assert rows[-1]["sum"] == pytest.approx(300.0 + 134.0)
+    _assert_continuous(rows)
+
+    store.delete_bill(bill["id"])
+    await _sync(hass)
+    rows = await _rows(hass, sid)
+    assert rows[5 * 24 - 1]["sum"] == pytest.approx(120.0)
+    assert rows[-1]["sum"] == pytest.approx(254.0)
+    _assert_continuous(rows)
+
+
+async def test_cost_statistic_with_bill_only(recorder_mock, hass: HomeAssistant, store) -> None:
+    """A bill without any contract also creates the cost statistic."""
+    meter = _meter(store)
+    store.save_bill(
+        {"meter_id": meter["id"], "start_date": "2025-06-21", "end_date": "2025-06-25", "total_cost": 60.0}
+    )
+    await _sync(hass)
+    rows = await _rows(hass, cost_statistic_id(meter["id"]))
+    assert rows[5 * 24 - 1]["sum"] == pytest.approx(60.0)
+    assert rows[-1]["sum"] == pytest.approx(60.0)  # no tariff afterwards
