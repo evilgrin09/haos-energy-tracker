@@ -310,3 +310,22 @@ async def test_cost_rewritten_for_historic_contract(recorder_mock, hass: HomeAss
     assert rows[7 * 24 - 1]["sum"] == pytest.approx(7 * 24 * 0.5)
     assert rows[-1]["sum"] == pytest.approx(7 * 24 * 0.5 + (254 - 7 * 24) * 1.0)
     _assert_continuous(rows)
+
+
+async def test_cost_rewritten_after_price_change(recorder_mock, hass: HomeAssistant, store) -> None:
+    """A price change rewrites the cost statistic from the day of the change."""
+    meter = _meter(store)
+    contract = store.save_contract({"meter_id": meter["id"], "start_date": "2025-01-01", "unit_price": 1.0})
+    await _sync(hass)
+    rows = await _rows(hass, cost_statistic_id(meter["id"]))
+    assert rows[-1]["sum"] == pytest.approx(254.0)
+
+    store.save_contract({"price_changes": [{"date": "2025-06-26", "unit_price": 2.0}]}, contract["id"])
+    await _sync(hass)
+    rows = await _rows(hass, cost_statistic_id(meter["id"]))
+    # 21.-25.06. (5 days) unchanged, from 26.06. twice the price
+    assert len(rows) == 254
+    assert rows[5 * 24 - 1]["sum"] == pytest.approx(120.0)
+    assert rows[5 * 24]["state"] == pytest.approx(2.0)
+    assert rows[-1]["sum"] == pytest.approx(120.0 + (254 - 120) * 2.0)
+    _assert_continuous(rows)

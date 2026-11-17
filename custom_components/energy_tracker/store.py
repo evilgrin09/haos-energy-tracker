@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -60,6 +60,7 @@ CONTRACT_FIELDS = (
     "payment_day",
     "first_payment",
     "advance_changes",
+    "price_changes",
     "notice_period",
     "note",
 )
@@ -74,6 +75,11 @@ BILL_FIELDS = (
     "balance",
     "new_advance",
     "new_advance_from",
+    "reading_start",
+    "reading_end",
+    "unit_price",
+    "base_price",
+    "conversion_factor",
     "note",
 )
 
@@ -99,6 +105,7 @@ def migrate(old_version: int, data: dict[str, Any]) -> dict[str, Any]:
 
     Version 2: billing date per meter (default 30.09.), forecast method,
     payment details per contract, bills.  Contracts keep all their values.
+    Version 3: price changes per contract.
     """
     if old_version < 2:
         for meter in data.get("meters", []):
@@ -110,7 +117,55 @@ def migrate(old_version: int, data: dict[str, Any]) -> dict[str, Any]:
             contract.setdefault("first_payment", None)
             contract.setdefault("advance_changes", [])
         data.setdefault("bills", [])
+    if old_version < 3:
+        # Version 3: price changes within a contract; bills keep their values
+        for contract in data.get("contracts", []):
+            contract.setdefault("price_changes", [])
     return data
+
+
+READING_NOTE_FROM_BILL = "aus Abrechnung"
+PRICE_KEYS = ("unit_price", "base_price", "conversion_factor")
+
+
+def validate_price_changes(
+    changes: list[dict[str, Any]], start: date, end: date | None
+) -> list[dict[str, Any]]:
+    """Check and normalise the price changes of a contract.
+
+    Each change must lie after the contract start and within its term, there
+    is at most one change per day, at least one price is given and all given
+    prices are greater than zero.  Empty prices keep the previous value.
+    """
+    result: list[dict[str, Any]] = []
+    seen: set[date] = set()
+    for change in changes:
+        day = parse_date(change["date"])
+        if day <= start or (end is not None and day > end):
+            raise TrackerError(
+                "price_change_outside",
+                f"Price change on {day.isoformat()} is not within the contract term "
+                "(after the start date, until the end date)",
+            )
+        if day in seen:
+            raise TrackerError("price_change_duplicate", f"Two price changes on {day.isoformat()}")
+        seen.add(day)
+        entry: dict[str, Any] = {"date": day.isoformat()}
+        for key in PRICE_KEYS:
+            value = change.get(key)
+            if value is None or value == "":
+                entry[key] = None
+                continue
+            if float(value) <= 0:
+                raise TrackerError(
+                    "price_change_invalid", f"Prices must be greater than 0 ({day.isoformat()})"
+                )
+            entry[key] = float(value)
+        if all(entry[key] is None for key in PRICE_KEYS):
+            raise TrackerError("price_change_empty", f"Price change on {day.isoformat()} has no price")
+        entry["note"] = change.get("note") or ""
+        result.append(entry)
+    return sorted(result, key=lambda c: c["date"])
 
 
 def _new_id() -> str:
@@ -371,6 +426,8 @@ class TrackerStore:
             ({"date": str(c["date"])[:10], "amount": float(c["amount"])} for c in merged["advance_changes"]),
             key=lambda c: c["date"],
         )
+        end = parse_date(merged["end_date"]) if merged.get("end_date") else None
+        merged["price_changes"] = validate_price_changes(merged.get("price_changes") or [], start, end)
         contract.update(merged)
         self.contracts[contract["id"]] = contract
         self._changed()
@@ -412,6 +469,51 @@ class TrackerStore:
         self.bills[bill["id"]] = bill
         self._changed()
         return bill
+
+    @callback
+    def readings_from_bill(self, bill: dict[str, Any]) -> list[dict[str, Any]]:
+        """Store the meter readings of a bill as readings where none exist.
+
+        The start reading belongs to the end of the day before the period
+        (= meter value at the beginning), the end reading to the last day.
+        Returns what happened for each reading.
+        """
+        result: list[dict[str, Any]] = []
+        candidates = (
+            ("start", bill.get("reading_start"), parse_date(bill["start_date"]) - timedelta(days=1)),
+            ("end", bill.get("reading_end"), parse_date(bill["end_date"])),
+        )
+        for which, value, day in candidates:
+            if value is None:
+                continue
+            entry = {"which": which, "date": day.isoformat(), "value": float(value)}
+            existing = [
+                r
+                for r in self.meter_readings(bill["meter_id"])
+                if r["date"] == day.isoformat() and not r.get("reset")
+            ]
+            if existing:
+                entry["status"] = "exists"
+                entry["existing_value"] = existing[0]["value"]
+            else:
+                try:
+                    reading = self.save_reading(
+                        {
+                            "meter_id": bill["meter_id"],
+                            "date": day.isoformat(),
+                            "value": float(value),
+                            "note": READING_NOTE_FROM_BILL,
+                        }
+                    )
+                except TrackerError as err:
+                    entry["status"] = "conflict"
+                    entry["message"] = str(err)
+                    entry["code"] = err.code
+                else:
+                    entry["status"] = "added"
+                    entry["reading_id"] = reading["id"]
+            result.append(entry)
+        return result
 
     @callback
     def delete_bill(self, bill_id: str) -> None:

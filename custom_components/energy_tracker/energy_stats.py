@@ -110,7 +110,7 @@ def daily_values(
     for day, value, _kind in model.series(start, today, today):
         consumption.append(value)
         tariff = find_tariff(tariffs, day) if tariffs else None
-        cost.append(tariff.day_cost(value) if tariff else 0.0)
+        cost.append(tariff.day_cost(value, day) if tariff else 0.0)
     return start, consumption, (cost if tariffs else None)
 
 

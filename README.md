@@ -27,7 +27,9 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
 - **Abrechnungsjahr pro Zähler**: Abrechnungsstichtag je Zähler (Standard 30.09.). Ein Abrechnungsjahr läuft vom Tag nach dem Stichtag bis zum Stichtag, z. B. „2025/26“ = 01.10.2025–30.09.2026.
 - **Verträge/Tarife**, auch rückwirkend und lückenlos hintereinander: Anbieter, Tarif, Kundennummer, Laufzeit, Kündigungsfrist, Arbeitspreis, Grundpreis, Umrechnungsfaktor (Gas m³ → kWh), Abschlag mit 11 oder 12 Zahlungen pro Jahr, Fälligkeitstag, erster Zahlung und **Abschlagsänderungen** („ab Datum X: Y €“).
 - **Abrechnungsprognose** je Abrechnungsjahr: Zählerstand am Stichtag (interpoliert oder hochgerechnet), Verbrauch, Kosten (bei Preisänderung oder Anbieterwechsel tageweise anteilig), Abschläge, bisher gezahlt, **erwartete Nachzahlung oder Erstattung** und **empfohlener Abschlag**.
-- **Echte Abrechnungen erfassen** und mit der eigenen Berechnung vergleichen (Verbrauch, Kosten, Abschläge, Ergebnis, Abweichung in € und %).
+- **Preisänderungen innerhalb eines Vertrags** (Arbeitspreis, Grundpreis, Umrechnungsfaktor ab Datum), tageweise anteilig gerechnet, mit Zeitleiste pro Vertrag.
+- **Echte Abrechnungen erfassen** und mit der eigenen Berechnung vergleichen (Verbrauch, Kosten, Abschläge, Ergebnis, Abweichung in € und %). Zählerstände aus Abrechnungen können als Ablesungen übernommen werden, auch für Jahre vor der ersten eigenen Ablesung.
+- **Kostenentwicklung** über mehrere Jahre, pro Zähler oder als Summe, nach Kalender- oder Abrechnungsjahr, mit Diagramm, Tabelle und CSV-Export.
 - **Sensoren** pro Zähler (ein Gerät je Zähler) für Dashboards und Automationen:
 
 | Sensor | Beschreibung |
@@ -87,12 +89,46 @@ Der Reiter **Abrechnung** zeigt pro Zähler:
 - **Tarife & Verträge**: Verträge dürfen in der Vergangenheit liegen. Trägst du ältere Verträge nach, werden Kosten, Prognose und die Kostenstatistik im Energie-Dashboard rückwirkend neu berechnet.
 - **Abrechnungen des Versorgers**: Zeitraum, abgerechneter Verbrauch (in Zählereinheit oder Abrechnungseinheit, z. B. kWh bei Gas), Gesamtkosten, gezahlte Abschläge, Ergebnis (leer = Abschläge − Kosten), neuer Abschlag ab Datum und Notiz.
 
+**Preisänderung erfassen**
+
+Bleibt der Versorger gleich, ändern sich aber die Preise, legst du keinen neuen Vertrag an. Stattdessen:
+
+1. Reiter **Abrechnung** → beim Vertrag auf den Stift klicken.
+2. Unter **Preisänderungen** eine Zeile ausfüllen: Datum, ab dem die neuen Preise gelten, dazu Arbeitspreis, Grundpreis, bei Gas optional der neue Umrechnungsfaktor, und eine Notiz.
+   - Leere Felder übernehmen den bisherigen Wert. Ändert sich nur der Grundpreis, trägst du nur diesen ein.
+   - Die Preise im Vertrag selbst sind die Startpreise ab Vertragsbeginn.
+   - Für weitere Änderungen erscheinen beim nächsten Bearbeiten neue leere Zeilen. Zum Löschen leerst du die Zeile (×).
+3. Speichern.
+
+Regeln:
+
+- Das Datum muss nach dem Vertragsbeginn und spätestens am Vertragsende liegen.
+- Pro Tag ist nur eine Änderung möglich, und angegebene Preise müssen größer als 0 sein.
+- Ab dem Datum gelten die neuen Preise bis zur nächsten Änderung. Im Abrechnungsjahr wird tageweise anteilig gerechnet: Arbeitspreis nach dem Verbrauch der Tage, Grundpreis zeitanteilig.
+- Die Aufteilung „Tarife im Zeitraum“ zeigt jeden Preisabschnitt mit Zeitraum und Preisen.
+- Die Kostenstatistik im Energie-Dashboard wird ab dem Änderungsdatum neu geschrieben.
+- Die **Zeitleiste** beim Vertrag listet Vertragsbeginn, Preisänderungen, Abschlagsänderungen und Vertragsende chronologisch.
+
 **Abschläge**
 
 - Pro Vertrag: Betrag, Anzahl pro Jahr (12 oder 11), Fälligkeitstag und optional das Datum der ersten Zahlung (Standard: erster Fälligkeitstag ab Vertragsbeginn).
 - Bei 11 Abschlägen gibt es im Monat des Stichtags keine Zahlung.
 - **Abschlagsänderungen** („ab 01.03.2026: 95 €“) trägst du beim Vertrag ein.
 - Ein **neuer Abschlag aus einer erfassten Abrechnung** wird automatisch ab dem angegebenen Datum übernommen. Steht für denselben Tag auch eine Änderung beim Vertrag, gilt die vom Vertrag.
+
+**Alte Abrechnungen nachtragen**
+
+Abrechnungen lassen sich für jeden Zeitraum erfassen, auch ohne Ablesungen oder Tarife. So holst du die Jahre vor der ersten eigenen Ablesung nach:
+
+1. Reiter **Abrechnung** → **Abrechnung erfassen**.
+2. Zeitraum, abgerechneten Verbrauch, Gesamtkosten und gezahlte Abschläge eintragen. Bei Gas den Verbrauch meist in kWh mit der Einheit „Abrechnungseinheit“.
+3. Optional die **Zählerstände laut Abrechnung** (Anfangs- und Endstand) und die **Preise laut Abrechnung** eintragen. Die Preise dienen nur der Kontrolle; gerechnet wird mit den Verträgen.
+4. Ist **„Anfangs- und Endstand als Ablesungen übernehmen“** angehakt, legt die Integration Ablesungen mit der Notiz „aus Abrechnung“ an:
+   - Den Haken setzt das Formular automatisch, wenn für diese Tage noch keine Ablesungen existieren.
+   - Der Anfangsstand gehört zum Tag vor Beginn des Zeitraums (Zählerstand bei Beginn), der Endstand zum letzten Tag.
+   - Gibt es für einen Tag schon eine Ablesung, bleibt sie unverändert.
+   - Passt ein Stand nicht zu den vorhandenen Ablesungen (z. B. höher als eine spätere Ablesung), wird er nicht übernommen und als Hinweis angezeigt.
+5. Ältere **Verträge mit Preisänderungen** nachtragen. Dann rechnet die Integration auch die Jahre ohne erfasste Abrechnung.
 
 In der **Auswertung** gibt es zusätzlich die Auflösung **Abrechnungsjahr**: die Monate eines Abrechnungsjahres (z. B. 2025/26), auf Wunsch mit dem Vorjahreszeitraum zum Vergleich.
 
@@ -182,6 +218,27 @@ Wie die Werte entstehen:
 - Die Statistik beginnt am Tag nach der ersten Ablesung und reicht bis zur letzten vollen Stunde. Sie wird stündlich fortgeschrieben.
 - Tage seit der letzten Ablesung sind zunächst Schätzwerte. Sobald du einen neuen Zählerstand erfasst, werden sie durch die gemessenen Werte ersetzt. Dasselbe gilt für rückwirkende oder korrigierte Ablesungen, Zählerwechsel und CSV-Importe: Die Statistik wird ab dem ersten betroffenen Tag neu geschrieben.
 - Wähle im Energie-Dashboard **nicht** den Sensor „Zählerstand“. Er hat deshalb bewusst keine `state_class` mehr.
+
+### Kostenentwicklung
+
+Der Reiter **Kosten** zeigt die Kosten über alle Jahre, für einen Zähler oder als **Summe aller Zähler**:
+
+- Umschaltbar zwischen **Kalenderjahr** und **Abrechnungsjahr** (z. B. „2025/26“).
+- Gestapelte Balken pro Jahr: **Arbeitspreis-Anteil** (kräftig) und **Grundpreis-Anteil** (heller). Das laufende Jahr ist eine **Prognose**: heller und gestrichelt umrandet.
+- Bei einem einzelnen Zähler auf Wunsch der **Verbrauch als Linie** mit eigener Achse rechts.
+- **Tabelle** pro Jahr: Quelle, Verbrauch, Kosten gesamt, Grundkosten, Durchschnittspreis inkl. Grundpreis (ct/kWh bei Strom, Gas und Wärme, €/m³ bei Wasser), Veränderung zum Vorjahr in € und %, Abschläge und Ergebnis.
+- **Quelle je Jahr**:
+  - „berechnet“: aus Ablesungen und Tarifen
+  - „laut Abrechnung“: aus einer erfassten Abrechnung
+  - „gemischt“: beides, z. B. im Kalenderjahr, wenn die Abrechnung nur Januar bis September abdeckt
+- **Vorrang der Abrechnung:** Liegt für einen Zeitraum eine Abrechnung mit Gesamtkosten vor, gelten deren Werte. Die Kosten werden dafür auf die Tage verteilt: der Arbeitspreis-Anteil nach dem Verbrauchsprofil, der Grundpreis gleichmäßig. Den Grundpreis-Anteil nimmt die Integration aus dem Grundpreis der Abrechnung, sonst aus dem Tarif.
+- **Lücken statt 0 €:** Jahre ohne Daten (vor der ersten Ablesung bzw. Abrechnung) oder ohne Tarif erscheinen als gestrichelter, leerer Balken mit „keine Daten“ bzw. „kein Tarif“.
+- **Unvollständige Jahre** (nur teilweise mit Tarif) sind mit „!“ und dem abgedeckten Anteil markiert. Für sie gibt es keinen Durchschnittspreis und keinen Vorjahresvergleich.
+- **Ergebnis** (Erstattung/Nachzahlung) gibt es nur beim Abrechnungsjahr: aus der Abrechnung oder, für vollständig berechnete Jahre, als Abschläge − Kosten.
+- In der Summe aller Zähler werden nur Kosten addiert, nicht der Verbrauch (unterschiedliche Einheiten). Jahre, in denen ein Zähler fehlt, sind als unvollständig markiert.
+- **CSV-Export** der Tabelle über „Tabelle als CSV exportieren“.
+
+Dieselben Daten liefert der Websocket-Befehl `energy_tracker/cost_history` (Parameter: `meter_id` optional, `mode`: `calendar` oder `billing`).
 
 ### CSV-Export
 

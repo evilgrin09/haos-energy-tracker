@@ -323,7 +323,8 @@ async def test_storage_migration(hass: HomeAssistant, hass_storage, frozen_2026,
     assert previous["result"] == "no_tariff"
     assert previous["cost_coverage"] == 0
     await store.async_flush()
-    assert hass_storage[f"{DOMAIN}.data"]["version"] == 2
+    assert hass_storage[f"{DOMAIN}.data"]["version"] == 3
+    assert hass_storage[f"{DOMAIN}.data"]["data"]["contracts"][0]["price_changes"] == []
 
 
 async def test_tariff_gaps_and_meter_fields(hass: HomeAssistant, entry, hass_ws_client) -> None:

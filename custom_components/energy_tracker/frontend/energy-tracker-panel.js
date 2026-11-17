@@ -16,6 +16,49 @@ const STRINGS = {
     tab_analysis: "Auswertung",
     tab_readings: "Zählerstände",
     tab_contracts: "Abrechnung",
+    tab_costs: "Kosten",
+    price_changes: "Preisänderungen",
+    unit_price_short: "Arbeitspreis/Einheit",
+    base_price_short: "Grundpreis/Monat",
+    price_changes_hint: "Ab dem Datum gelten die neuen Preise bis zur nächsten Änderung. Leere Felder übernehmen den bisherigen Wert. Zum Löschen das Datum leeren.",
+    clear_row: "Zeile leeren",
+    timeline: "Zeitleiste",
+    timeline_start: "Vertragsbeginn",
+    timeline_price: "Preisänderung",
+    timeline_advance: "Abschlag",
+    timeline_end: "Vertragsende",
+    factor_short: "Faktor",
+    err_price_change_outside: "Eine Preisänderung muss nach dem Vertragsbeginn und spätestens am Vertragsende liegen.",
+    err_price_change_duplicate: "Pro Tag ist nur eine Preisänderung möglich.",
+    err_price_change_invalid: "Preise müssen größer als 0 sein.",
+    err_price_change_empty: "Eine Preisänderung braucht mindestens einen Preis.",
+    bill_readings: "Zählerstände laut Abrechnung",
+    reading_bill_start: "Anfangsstand",
+    reading_bill_end: "Endstand",
+    bill_prices: "Preise laut Abrechnung (nur zur Kontrolle)",
+    take_readings: "Anfangs- und Endstand als Ablesungen übernehmen, falls für diese Tage keine existieren (Notiz „aus Abrechnung“). Der Anfangsstand gilt für den Tag vor Beginn des Zeitraums.",
+    readings_imported: "{added} Zählerstand/-stände aus der Abrechnung übernommen",
+    readings_conflict: "Nicht übernommen: {date} ({value}) – {message}",
+    costs_title: "Kostenentwicklung",
+    all_meters: "Alle Zähler (Summe)",
+    mode_calendar: "Kalenderjahr",
+    mode_billing: "Abrechnungsjahr",
+    show_consumption: "Verbrauch als Linie",
+    year: "Jahr",
+    source: "Quelle",
+    source_calculated: "berechnet",
+    source_bill: "laut Abrechnung",
+    source_mixed: "gemischt",
+    gap_no_tariff: "kein Tarif",
+    gap_no_data: "keine Daten",
+    avg_price: "Ø Preis",
+    change_prev: "Δ Vorjahr",
+    covered: "{p} % abgedeckt",
+    forecast_year_note: "Prognose",
+    costs_note: "Liegt für einen Zeitraum eine erfasste Abrechnung vor, gelten deren Werte. Durchschnittspreis inkl. Grundpreis. Das laufende Jahr ist eine Prognose (heller).",
+    sum_note: "Summe der Kosten aller Zähler. Unvollständige Jahre sind markiert; der Verbrauch wird nicht summiert (unterschiedliche Einheiten).",
+    incomplete_meters: "unvollständig: {names}",
+    no_cost_data: "Noch keine Kosten: Lege Verträge an oder erfasse Abrechnungen.",
     billing_year: "Abrechnungsjahr",
     calculated_refund: "Berechnete Erstattung",
     calculated_payment: "Berechnete Nachzahlung",
@@ -300,6 +343,49 @@ const STRINGS = {
     tab_analysis: "Analysis",
     tab_readings: "Readings",
     tab_contracts: "Billing",
+    tab_costs: "Costs",
+    price_changes: "Price changes",
+    unit_price_short: "Unit price",
+    base_price_short: "Base price/month",
+    price_changes_hint: "The new prices apply from the date until the next change. Empty fields keep the previous value. Clear the date to delete a change.",
+    clear_row: "Clear row",
+    timeline: "Timeline",
+    timeline_start: "Contract start",
+    timeline_price: "Price change",
+    timeline_advance: "Advance payment",
+    timeline_end: "Contract end",
+    factor_short: "Factor",
+    err_price_change_outside: "A price change must be after the contract start and not after the contract end.",
+    err_price_change_duplicate: "Only one price change per day is possible.",
+    err_price_change_invalid: "Prices must be greater than 0.",
+    err_price_change_empty: "A price change needs at least one price.",
+    bill_readings: "Meter readings according to the bill",
+    reading_bill_start: "Start reading",
+    reading_bill_end: "End reading",
+    bill_prices: "Prices according to the bill (for checking only)",
+    take_readings: "Store start and end reading as readings if there are none for these days (note “aus Abrechnung”). The start reading belongs to the day before the period.",
+    readings_imported: "{added} reading(s) taken from the bill",
+    readings_conflict: "Not taken: {date} ({value}) – {message}",
+    costs_title: "Cost development",
+    all_meters: "All meters (total)",
+    mode_calendar: "Calendar year",
+    mode_billing: "Billing year",
+    show_consumption: "Consumption as line",
+    year: "Year",
+    source: "Source",
+    source_calculated: "calculated",
+    source_bill: "from bill",
+    source_mixed: "mixed",
+    gap_no_tariff: "no tariff",
+    gap_no_data: "no data",
+    avg_price: "Ø price",
+    change_prev: "Δ previous year",
+    covered: "{p} % covered",
+    forecast_year_note: "Forecast",
+    costs_note: "Where a bill is recorded for a period, its values are used. Average price incl. base price. The current year is a forecast (lighter).",
+    sum_note: "Total cost of all meters. Incomplete years are marked; consumption is not added up (different units).",
+    incomplete_meters: "incomplete: {names}",
+    no_cost_data: "No costs yet: add contracts or record bills.",
     billing_year: "Billing year",
     calculated_refund: "Calculated refund",
     calculated_payment: "Calculated additional payment",
@@ -780,6 +866,82 @@ function renderLineChart(width, height, series, opts) {
   return svg;
 }
 
+/**
+ * Cost chart: stacked bars (energy + base cost) per year, gaps with a label,
+ * forecast years lighter, optional consumption line on a second axis.
+ * spec.years: [{label, energy, base, gap, forecast, consumption}]
+ */
+function renderCostChart(width, height, spec, opts) {
+  const line = spec.showLine && spec.years.some((y) => y.consumption > 0);
+  const pad = { l: 64, r: line ? 64 : 12, t: line ? 28 : 14, b: 28 };
+  const w = Math.max(width - pad.l - pad.r, 50);
+  const h = height - pad.t - pad.b;
+  const n = spec.years.length || 1;
+  const max = Math.max(0, ...spec.years.map((y) => (y.energy || 0) + (y.base || 0)));
+  const scale = niceScale(max);
+  const y = (v) => pad.t + h - (v / scale.max) * h;
+  const gw = w / n;
+  const bw = Math.max(4, Math.min(gw * 0.6, 90));
+  const color = spec.color;
+  let svg = `<svg width="${width}" height="${height}" class="chart">`;
+  for (let v = 0; v <= scale.max + 1e-9; v += scale.step) {
+    svg += `<line x1="${pad.l}" x2="${pad.l + w}" y1="${y(v)}" y2="${y(v)}" class="grid"></line>
+      <text x="${pad.l - 6}" y="${y(v) + 4}" class="axis" text-anchor="end">${esc(opts.formatMoney(v, scale.step))}</text>`;
+  }
+  spec.years.forEach((yr, i) => {
+    const cx = pad.l + i * gw + gw / 2;
+    const x0 = cx - bw / 2;
+    if (yr.gap) {
+      svg += `<rect x="${x0}" y="${pad.t + h * 0.35}" width="${bw}" height="${h * 0.65}" class="gap-bar" rx="3"></rect>
+        <text x="${cx}" y="${pad.t + h * 0.35 + 16}" class="axis gap-text" text-anchor="middle">${esc(yr.gapText)}</text>`;
+    } else {
+      const op = yr.forecast ? 0.45 : 1;
+      const top1 = y(yr.energy);
+      svg += `<rect x="${x0}" y="${top1}" width="${bw}" height="${Math.max(0, y(0) - top1)}" fill="${color}" opacity="${op}"></rect>`;
+      const top2 = y(yr.energy + yr.base);
+      svg += `<rect x="${x0}" y="${top2}" width="${bw}" height="${Math.max(0, top1 - top2)}" fill="${color}" opacity="${op * 0.45}"></rect>`;
+      if (yr.forecast) {
+        svg += `<rect x="${x0}" y="${top2}" width="${bw}" height="${Math.max(0, y(0) - top2)}" fill="none" stroke="${color}" stroke-dasharray="4 3" stroke-width="1.5"></rect>`;
+      }
+      if (yr.partial) {
+        svg += `<text x="${cx}" y="${top2 - 4}" class="axis warn-fill" text-anchor="middle">!</text>`;
+      }
+    }
+    svg += `<text x="${cx}" y="${height - 8}" class="axis" text-anchor="middle">${esc(yr.label)}</text>`;
+  });
+  if (line) {
+    const values = spec.years.map((yr) => yr.consumption ?? null);
+    const lscale = niceScale(Math.max(...values.filter((v) => v !== null)));
+    const ly = (v) => pad.t + h - (v / lscale.max) * h;
+    for (let v = 0; v <= lscale.max + 1e-9; v += lscale.step) {
+      svg += `<text x="${pad.l + w + 6}" y="${ly(v) + 4}" class="axis">${esc(opts.formatUnit(v, lscale.step))}</text>`;
+    }
+    let path = "";
+    let dashed = "";
+    values.forEach((v, i) => {
+      if (v === null) return;
+      const px = pad.l + i * gw + gw / 2;
+      const cmd = `${path ? "L" : "M"}${px.toFixed(1)},${ly(v).toFixed(1)}`;
+      if (spec.years[i].forecast) {
+        const prev = values[i - 1];
+        if (prev !== null && prev !== undefined && !dashed) dashed = `M${(pad.l + (i - 1) * gw + gw / 2).toFixed(1)},${ly(prev).toFixed(1)}`;
+        dashed += `${dashed ? " L" : "M"}${px.toFixed(1)},${ly(v).toFixed(1)}`;
+      } else {
+        path += (path ? " " : "") + cmd;
+      }
+      svg += `<circle cx="${px}" cy="${ly(v)}" r="3.5" class="line-dot"></circle>`;
+    });
+    if (path) svg += `<path d="${path}" fill="none" class="cons-line"></path>`;
+    if (dashed) svg += `<path d="${dashed}" fill="none" class="cons-line" stroke-dasharray="5 4"></path>`;
+    svg += `<text x="${pad.l + w + 6}" y="${pad.t - 14}" class="axis">${esc(spec.unit)}</text>`;
+  }
+  spec.years.forEach((_, i) => {
+    svg += `<rect x="${pad.l + i * gw}" y="${pad.t}" width="${gw}" height="${h}" fill="transparent" class="hover" data-idx="${i}"></rect>`;
+  });
+  svg += `<line x1="${pad.l}" x2="${pad.l + w}" y1="${y(0)}" y2="${y(0)}" class="baseline"></line></svg>`;
+  return svg;
+}
+
 /* ----------------------------------------------------------------- panel */
 
 class EnergyTrackerPanel extends HTMLElement {
@@ -875,9 +1037,9 @@ class EnergyTrackerPanel extends HTMLElement {
     return this._num(value, abs >= 1000 ? 0 : abs >= 100 ? 1 : 2);
   }
 
-  _axis(value, step, costAware) {
+  _axis(value, step, costAware, money = false) {
     const digits = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
-    if (costAware && this._state.mode === "cost") {
+    if (money || (costAware && this._state.mode === "cost")) {
       return new Intl.NumberFormat(this._lang, {
         style: "currency",
         currency: this._data?.currency || "EUR",
@@ -964,6 +1126,7 @@ class EnergyTrackerPanel extends HTMLElement {
       if (tab === "overview") await this._loadSparks();
       if (tab === "analysis") await this._loadStats();
       if (tab === "contracts") await this._loadBilling();
+      if (tab === "costs") await this._loadCosts();
     } catch (err) {
       this._toast(this._errorText(err), true);
     }
@@ -1062,6 +1225,17 @@ class EnergyTrackerPanel extends HTMLElement {
     if (this._state.tab === "analysis") this._render();
   }
 
+  async _loadCosts() {
+    const s = this._state;
+    s.costMeter = s.costMeter || "all";
+    s.costMode = s.costMode || "calendar";
+    const req = { mode: s.costMode };
+    if (s.costMeter !== "all") req.meter_id = s.costMeter;
+    this._costs = await this._ws("cost_history", req);
+    this._costs.key = `${s.costMeter}|${s.costMode}`;
+    if (s.tab === "costs") this._render();
+  }
+
   async _loadBilling() {
     const meterId = this._state.meterId;
     if (!meterId) return;
@@ -1114,7 +1288,7 @@ class EnergyTrackerPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot.querySelector(".content")) return;
-    const tabs = ["overview", "analysis", "readings", "contracts", "meters"];
+    const tabs = ["overview", "analysis", "readings", "contracts", "costs", "meters"];
     this.shadowRoot.querySelector(".tabs").innerHTML = tabs
       .map(
         (tab) =>
@@ -2027,10 +2201,12 @@ class EnergyTrackerPanel extends HTMLElement {
     if (b.segments.length) {
       html += `<details ${b.segments.length > 1 ? "open" : ""}><summary>${esc(this._t("segments"))} (${b.segments.length})</summary><div class="table-wrap"><table>
         <thead><tr><th>${esc(this._t("tariff"))}</th><th>${esc(this._t("period"))}</th><th class="num">${esc(this._t("days"))}</th>
-        <th class="num">${esc(this._t("consumption"))}</th><th class="num">${esc(this._t("energy_cost"))}</th><th class="num">${esc(this._t("base_cost"))}</th></tr></thead><tbody>
-        ${b.segments.map((seg) => `<tr><td>${esc([seg.provider, seg.tariff].filter(Boolean).join(" · ") || "–")}</td>
+        <th class="num">${esc(this._t("consumption"))}</th><th class="num">${esc(this._t("unit_price_short"))}</th><th class="num">${esc(this._t("base_price_short"))}</th><th class="num">${esc(this._t("energy_cost"))}</th><th class="num">${esc(this._t("base_cost"))}</th></tr></thead><tbody>
+        ${b.segments.map((seg) => `<tr><td>${esc([seg.provider, seg.tariff].filter(Boolean).join(" · ") || "–")}${seg.note ? `<div class="muted small">${esc(seg.note)}</div>` : ""}</td>
           <td>${this._date(seg.start)} – ${this._date(seg.end)}</td><td class="num">${seg.days}</td>
-          <td class="num">${this._auto(seg.consumption)} ${u}</td><td class="num">${this._money(seg.energy_cost)}</td><td class="num">${this._money(seg.base_cost)}</td></tr>`).join("")}
+          <td class="num">${this._auto(seg.consumption)} ${u}</td>
+          <td class="num">${this._num(seg.unit_price, 4)} ${esc(this._currencySymbol)}${seg.conversion_factor !== 1 ? ` <span class="muted">(${esc(this._t("factor_short"))} ${this._num(seg.conversion_factor, 4)})</span>` : ""}</td>
+          <td class="num">${this._money(seg.base_price)}</td><td class="num">${this._money(seg.energy_cost)}</td><td class="num">${this._money(seg.base_cost)}</td></tr>`).join("")}
         </tbody></table></div></details>`;
     }
     if (b.payments.length) {
@@ -2082,6 +2258,10 @@ class EnergyTrackerPanel extends HTMLElement {
         ${bill.consumption !== null && bill.consumption !== undefined ? `<span>${esc(this._t("consumption"))}: <strong>${this._num(bill.consumption, 2)} ${esc(unit)}</strong></span>` : ""}
         ${bill.total_cost !== null && bill.total_cost !== undefined ? `<span>${esc(this._t("total_cost"))}: <strong>${this._money(bill.total_cost)}</strong></span>` : ""}
         ${bill.advances_paid !== null && bill.advances_paid !== undefined ? `<span>${esc(this._t("advances"))}: <strong>${this._money(bill.advances_paid)}</strong></span>` : ""}
+        ${bill.reading_start !== null && bill.reading_start !== undefined ? `<span>${esc(this._t("reading_bill_start"))}: <strong>${this._num(bill.reading_start, 2)}</strong></span>` : ""}
+        ${bill.reading_end !== null && bill.reading_end !== undefined ? `<span>${esc(this._t("reading_bill_end"))}: <strong>${this._num(bill.reading_end, 2)}</strong></span>` : ""}
+        ${bill.unit_price ? `<span>${esc(this._t("energy_cost"))}: <strong>${this._num(bill.unit_price, 4)} ${esc(this._currencySymbol)}</strong></span>` : ""}
+        ${bill.base_price ? `<span>${esc(this._t("base_cost"))}: <strong>${this._money(bill.base_price)} ${esc(this._t("per_month"))}</strong></span>` : ""}
         ${bill.new_advance !== null && bill.new_advance !== undefined ? `<span>${esc(this._t("new_advance"))}: <strong>${this._money(bill.new_advance)}</strong>${bill.new_advance_from ? ` ${esc(this._t("advance_from"))} ${this._date(bill.new_advance_from)}` : ""}</span>` : ""}
         ${dev.consumption ? `<span>${esc(this._t("deviation"))} ${esc(this._t("consumption"))}: <strong>${dev.consumption.diff > 0 ? "+" : ""}${this._num(dev.consumption.pct ?? 0, 1)} %</strong></span>` : ""}
         ${dev.total_cost ? `<span>${esc(this._t("deviation"))} ${esc(this._t("cost"))}: <strong>${dev.total_cost.diff > 0 ? "+" : ""}${this._money(dev.total_cost.diff)}</strong></span>` : ""}
@@ -2091,7 +2271,7 @@ class EnergyTrackerPanel extends HTMLElement {
   _contractCard(c, meter) {
     const cur = this._currencySymbol;
     const billingUnit = c.conversion_factor && c.conversion_factor !== 1 ? "kWh" : meter.unit;
-    const changes = (c.advance_changes || []).map((ch) => `${this._money(ch.amount)} ${esc(this._t("advance_from"))} ${this._date(ch.date)}`);
+    const changes = c.advance_changes || [];
     return `<div class="card" style="--accent:${TYPE_COLOR[meter.type]}">
       <div class="card-head"><div class="grow"><div class="card-title">${esc(c.provider || this._t("tab_contracts"))}${c.tariff ? ` · ${esc(c.tariff)}` : ""}</div>
         <div class="muted">${this._date(c.start_date)} – ${c.end_date ? this._date(c.end_date) : esc(this._t("open_end"))}${c.customer_number ? ` · ${esc(this._t("customer_number"))} ${esc(c.customer_number)}` : ""}${c.notice_period ? ` · ${esc(this._t("notice_period"))}: ${esc(c.notice_period)}` : ""}</div></div>
@@ -2101,9 +2281,32 @@ class EnergyTrackerPanel extends HTMLElement {
         <span>${esc(this._t("energy_cost"))}: <strong>${this._num(c.unit_price || 0, 4)} ${esc(cur)}/${esc(billingUnit)}</strong></span>
         <span>${esc(this._t("base_cost"))}: <strong>${this._money(c.base_price || 0)} ${esc(this._t("per_month"))}</strong></span>
         <span>${esc(this._t("advance"))}: <strong>${this._money(c.advance_payment || 0)}</strong> · ${c.payments_per_year || 12}× · ${esc(this._t("payment_day"))} ${c.payment_day || 1}.</span>
-        ${changes.length ? `<span>${esc(this._t("advance_changes"))}: <strong>${changes.join(", ")}</strong></span>` : ""}
         ${c.conversion_factor && c.conversion_factor !== 1 ? `<span>${esc(this._t("conversion_factor", { unit: meter.unit }))}: <strong>${this._num(c.conversion_factor, 4)}</strong></span>` : ""}
-      </div></div>`;
+      </div>
+      ${(c.price_changes || []).length || changes.length ? this._contractTimeline(c, meter, billingUnit) : ""}</div>`;
+  }
+
+  _contractTimeline(c, meter, billingUnit) {
+    const cur = this._currencySymbol;
+    const factor = meter.type === "gas" || (c.conversion_factor && c.conversion_factor !== 1);
+    const priceText = (unit, base, conv) =>
+      [
+        unit !== null && unit !== undefined ? `${this._num(unit, 4)} ${esc(cur)}/${esc(billingUnit)}` : null,
+        base !== null && base !== undefined ? `${this._money(base)} ${esc(this._t("per_month"))}` : null,
+        factor && conv !== null && conv !== undefined ? `${esc(this._t("factor_short"))} ${this._num(conv, 4)}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    const events = [
+      { date: c.start_date, order: 0, kind: "start", text: priceText(c.unit_price, c.base_price, c.conversion_factor) + ` · ${esc(this._t("advance"))} ${this._money(c.advance_payment || 0)}` },
+      ...(c.price_changes || []).map((pc) => ({ date: pc.date, order: 1, kind: "price", text: priceText(pc.unit_price, pc.base_price, pc.conversion_factor) + (pc.note ? ` · ${esc(pc.note)}` : "") })),
+      ...(c.advance_changes || []).map((ch) => ({ date: ch.date, order: 2, kind: "advance", text: this._money(ch.amount) })),
+    ];
+    if (c.end_date) events.push({ date: c.end_date, order: 3, kind: "end", text: "" });
+    events.sort((a, b) => (a.date === b.date ? a.order - b.order : a.date < b.date ? -1 : 1));
+    return `<details class="timeline"><summary>${esc(this._t("timeline"))} (${events.length})</summary><ol>
+      ${events.map((e) => `<li class="tl-${e.kind}"><span class="tl-date">${this._date(e.date)}</span><span class="tl-kind">${esc(this._t(`timeline_${e.kind}`))}</span><span>${e.text}</span></li>`).join("")}
+      </ol></details>`;
   }
 
   _contractForm(meter, c) {
@@ -2116,6 +2319,8 @@ class EnergyTrackerPanel extends HTMLElement {
     const priceUnit = showFactor && meter.unit === "m³" ? "kWh" : meter.unit;
     const dec = 'type="text" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)*" autocomplete="off"';
     const changes = [...(c?.advance_changes || []), { date: "", amount: "" }, { date: "", amount: "" }];
+    const prices = [...(c?.price_changes || []), {}, {}];
+    const pcVal = (value) => (value === null || value === undefined || value === "" ? "" : esc(this._plain(value)));
     const perYear = Number(c?.payments_per_year || 12);
     return `<div class="card"><div class="card-title">${esc(c ? this._t("edit") : this._t("add_contract"))} – ${esc(meter.name)}</div>
       <form data-form="contract" class="form-grid">
@@ -2138,6 +2343,14 @@ class EnergyTrackerPanel extends HTMLElement {
           ${changes.map((ch, i) => `<div class="change-row"><span>${esc(this._t("advance_from"))}</span><input type="date" name="chg_date_${i}" value="${esc(ch.date)}">
             <input ${dec} name="chg_amount_${i}" value="${ch.amount === "" ? "" : esc(this._plain(ch.amount))}" placeholder="${esc(this._t("amount"))}"><span>${esc(cur)}</span></div>`).join("")}
           <small>${esc(this._t("advance_changes_hint"))}</small></fieldset>
+        <fieldset class="wide changes"><legend>${esc(this._t("price_changes"))}</legend>
+          ${prices.map((pc, i) => `<div class="change-row"><span>${esc(this._t("advance_from"))}</span><input type="date" name="pc_date_${i}" value="${esc(pc.date || "")}">
+            <input ${dec} name="pc_unit_${i}" value="${pcVal(pc.unit_price)}" placeholder="${esc(this._t("energy_cost"))}" title="${esc(this._t("unit_price", { currency: cur, unit: priceUnit }))}">
+            <input ${dec} name="pc_base_${i}" value="${pcVal(pc.base_price)}" placeholder="${esc(this._t("base_cost"))}" title="${esc(this._t("base_price", { currency: cur }))}">
+            ${showFactor ? `<input ${dec} name="pc_factor_${i}" value="${pcVal(pc.conversion_factor)}" placeholder="${esc(this._t("factor_short"))}" title="${esc(this._t("conversion_factor", { unit: meter.unit }))}">` : ""}
+            <input name="pc_note_${i}" class="note-input" value="${esc(pc.note || "")}" placeholder="${esc(this._t("note"))}">
+            <button type="button" class="icon" data-action="clear-row" title="${esc(this._t("clear_row"))}"><ha-icon icon="mdi:close"></ha-icon></button></div>`).join("")}
+          <small>${esc(this._t("price_changes_hint"))}</small></fieldset>
         <label class="field wide"><span>${esc(this._t("note"))}</span><input name="note" value="${v("note")}"></label>
         <div class="buttons wide"><button class="primary" type="submit">${esc(this._t("save"))}</button>
           <button type="button" class="flat" data-action="cancel-contract">${esc(this._t("cancel"))}</button></div>
@@ -2158,6 +2371,9 @@ class EnergyTrackerPanel extends HTMLElement {
       end = period.end;
     }
     const resultType = bill?.balance === null || bill?.balance === undefined ? "auto" : bill.balance >= 0 ? "refund" : "payment";
+    // suggest taking over the readings if there are none on these days
+    const hasReading = (day) => this._data.readings.some((r) => r.meter_id === meter.id && r.date === day && !r.reset);
+    const takeDefault = !bill && start && end && !hasReading(addDays(start, -1)) && !hasReading(end);
     return `<div class="card"><div class="card-title">${esc(bill ? this._t("edit") : this._t("add_bill"))} – ${esc(meter.name)}</div>
       <form data-form="bill" class="form-grid">
         <label class="field"><span>${esc(this._t("period_from"))}</span><input type="date" name="start_date" required value="${esc(start || "")}"></label>
@@ -2173,10 +2389,190 @@ class EnergyTrackerPanel extends HTMLElement {
         <label class="field"><span>${esc(this._t("amount"))} (${esc(cur)})</span><input ${dec} name="result_amount" value="${resultType === "auto" ? "" : esc(this._plain(Math.abs(bill.balance)))}"></label>
         <label class="field"><span>${esc(this._t("new_advance"))} (${esc(cur)})</span><input ${dec} name="new_advance" value="${num("new_advance")}"></label>
         <label class="field"><span>${esc(this._t("new_advance_from"))}</span><input type="date" name="new_advance_from" value="${esc(bill?.new_advance_from || "")}"><small>${esc(this._t("bill_hint"))}</small></label>
+        <fieldset class="wide changes"><legend>${esc(this._t("bill_readings"))} (${esc(meter.unit)})</legend>
+          <div class="change-row">
+            <span>${esc(this._t("reading_bill_start"))}</span><input ${dec} name="reading_start" value="${num("reading_start")}">
+            <span>${esc(this._t("reading_bill_end"))}</span><input ${dec} name="reading_end" value="${num("reading_end")}">
+          </div>
+          <label class="check"><input type="checkbox" name="take_readings" ${takeDefault ? "checked" : ""}> <small>${esc(this._t("take_readings"))}</small></label>
+        </fieldset>
+        <fieldset class="wide changes"><legend>${esc(this._t("bill_prices"))}</legend>
+          <div class="change-row">
+            <span>${esc(this._t("energy_cost"))}</span><input ${dec} name="unit_price" value="${num("unit_price")}" title="${esc(this._t("unit_price", { currency: cur, unit: meter.type === "gas" ? "kWh" : meter.unit }))}">
+            <span>${esc(this._t("base_cost"))}</span><input ${dec} name="base_price" value="${num("base_price")}" title="${esc(this._t("base_price", { currency: cur }))}">
+            ${meter.type === "gas" ? `<span>${esc(this._t("factor_short"))}</span><input ${dec} name="conversion_factor" value="${num("conversion_factor")}">` : ""}
+          </div>
+        </fieldset>
         <label class="field wide"><span>${esc(this._t("note"))}</span><input name="note" value="${esc(bill?.note || "")}"></label>
         <div class="buttons wide"><button class="primary" type="submit">${esc(this._t("save"))}</button>
           <button type="button" class="flat" data-action="cancel-bill">${esc(this._t("cancel"))}</button></div>
       </form></div>`;
+  }
+
+  /* cost development */
+
+  _render_costs() {
+    const s = this._state;
+    s.costMeter = s.costMeter || "all";
+    s.costMode = s.costMode || "calendar";
+    if (s.costLine === undefined) s.costLine = true;
+    let html = `<div class="card controls">
+      <label class="field inline"><span>${esc(this._t("meter"))}</span><select data-bind="costMeter">
+        <option value="all" ${s.costMeter === "all" ? "selected" : ""}>${esc(this._t("all_meters"))}</option>
+        ${this._data.meters.map((m) => `<option value="${m.id}" ${m.id === s.costMeter ? "selected" : ""}>${esc(m.name)} (${esc(this._t(`type_${m.type}`))})</option>`).join("")}
+      </select></label>
+      <div class="segmented">${["calendar", "billing"].map((m) => `<button class="${m === s.costMode ? "active" : ""}" data-action="cost-mode" data-mode="${m}">${esc(this._t(`mode_${m}`))}</button>`).join("")}</div>
+      ${s.costMeter !== "all" ? `<label class="check"><input type="checkbox" data-bind="costLine" ${s.costLine ? "checked" : ""}> ${esc(this._t("show_consumption"))}</label>` : ""}
+    </div>`;
+    const data = this._costs;
+    if (!data || data.key !== `${s.costMeter}|${s.costMode}`) return html + `<div class="card empty">${esc(this._t("loading"))}</div>`;
+    const single = s.costMeter !== "all";
+    const meter = single ? data.meters[0] : null;
+    const years = single ? meter.years : data.total;
+    if (!years.length || years.every((y) => y.total_cost === null)) {
+      html += `<div class="card empty">${esc(this._t("no_cost_data"))}</div>`;
+    }
+    const color = single ? TYPE_COLOR[meter.type] : "var(--primary-color)";
+    html += `<div class="card"><div class="card-title">${esc(this._t("costs_title"))}${single ? ` – ${esc(meter.name)}` : ""}</div>
+      <div class="chart-box" data-chart="costs"></div>
+      <div class="legend">
+        <span><i style="background:${color}"></i>${esc(this._t("energy_cost"))}</span>
+        <span><i style="background:${color};opacity:.45"></i>${esc(this._t("base_cost"))}</span>
+        <span><i class="forecast-swatch" style="--c:${color}"></i>${esc(this._t("forecast_year_note"))}</span>
+        ${single && s.costLine ? `<span><i class="line-swatch"></i>${esc(this._t("consumption"))} (${esc(meter.unit)})</span>` : ""}
+      </div>
+      <div class="hint">${esc(this._t(single ? "costs_note" : "sum_note"))}</div></div>
+      <div class="card">${this._costTable(years, meter)}
+        <div class="buttons"><button type="button" class="flat" data-action="export-costs">${esc(this._t("export_table"))}</button></div></div>`;
+    this._charts.costs = () => ({
+      type: "cost",
+      height: 300,
+      color,
+      unit: meter?.unit || "",
+      showLine: single && s.costLine,
+      years: years.map((y) => ({
+        label: y.label,
+        energy: y.energy_cost || 0,
+        base: y.base_cost || 0,
+        gap: y.total_cost === null,
+        gapText: this._t(`gap_${y.gap_reason || "no_data"}`),
+        forecast: y.forecast,
+        partial: y.status === "partial",
+        consumption: single ? y.consumption : null,
+      })),
+      tooltip: (i) => this._costTooltip(years[i], meter),
+    });
+    return html;
+  }
+
+  _costSource(year) {
+    if (!year.source) return "";
+    return esc(this._t(`source_${year.source}`));
+  }
+
+  _costTooltip(year, meter) {
+    if (!year) return "";
+    let html = `<strong>${esc(year.label)}</strong> <span class="muted">${this._date(year.start)} – ${this._date(year.end)}</span>`;
+    if (year.forecast) html += `<div><em>${esc(this._t("forecast_year_note"))}</em></div>`;
+    if (year.total_cost === null) {
+      return html + `<div>${esc(this._t(`gap_${year.gap_reason || "no_data"}`))}</div>`;
+    }
+    html += `<div>${esc(this._t("total_cost"))}: <strong>${this._money(year.total_cost)}</strong></div>
+      <div>${esc(this._t("energy_cost"))}: ${this._money(year.energy_cost)}</div>
+      <div>${esc(this._t("base_cost"))}: ${this._money(year.base_cost)}</div>`;
+    if (meter && year.consumption !== null) html += `<div>${esc(this._t("consumption"))}: ${this._auto(year.consumption)} ${esc(meter.unit)}</div>`;
+    if (year.change !== null && year.change !== undefined) html += `<div>${esc(this._t("change_prev"))}: ${year.change > 0 ? "+" : ""}${this._money(year.change)}</div>`;
+    html += `<div class="muted">${esc(this._t("source"))}: ${this._costSource(year)}${year.status === "partial" && year.cost_coverage !== undefined ? ` · ${esc(this._t("covered", { p: this._num(year.cost_coverage * 100, 0) }))}` : ""}</div>`;
+    if (year.incomplete?.length) html += `<div class="warn-text">${esc(this._t("incomplete_meters", { names: year.incomplete.join(", ") }))}</div>`;
+    return html;
+  }
+
+  _costRows(years, meter) {
+    // rows as plain values: used for the table and the CSV export
+    return years.map((y) => {
+      const gap = y.total_cost === null;
+      return {
+        year: y,
+        label: y.label + (y.forecast ? ` (${this._t("forecast_year_note")})` : ""),
+        source: gap ? this._t(`gap_${y.gap_reason || "no_data"}`) : this._t(`source_${y.source}`),
+        consumption: meter && y.consumption !== null ? y.consumption : null,
+        total: y.total_cost,
+        base: y.base_cost,
+        avg: y.avg_price ?? null,
+        avgUnit: y.avg_price_unit || "",
+        change: y.change ?? null,
+        changePct: y.change_pct ?? null,
+        advances: y.advances ?? null,
+        result: y.result ?? null,
+        coverage: y.cost_coverage,
+        incomplete: y.incomplete || [],
+      };
+    });
+  }
+
+  _costTable(years, meter) {
+    const rows = this._costRows(years, meter)
+      .map((r) => {
+        const y = r.year;
+        const cls = [y.forecast ? "forecast-row" : "", y.total_cost === null ? "gap-row" : ""].join(" ");
+        const partial =
+          y.status === "partial"
+            ? `<div class="warn-text small">${esc(r.incomplete.length ? this._t("incomplete_meters", { names: r.incomplete.join(", ") }) : this._t("covered", { p: this._num((r.coverage || 0) * 100, 0) }))}</div>`
+            : "";
+        const avg = r.avg === null ? "–" : r.avgUnit === "ct/kWh" ? `${this._num(r.avg, 2)} ct/kWh` : `${this._money(r.avg)}/${esc(r.avgUnit.replace("€/", ""))}`;
+        return `<tr class="${cls}"><td>${esc(r.label)}</td>
+          <td><span class="badge source-${y.source || "gap"}">${esc(r.source)}</span></td>
+          ${meter ? `<td class="num">${r.consumption === null ? "–" : `${this._auto(r.consumption)} ${esc(meter.unit)}`}</td>` : ""}
+          <td class="num"><strong>${r.total === null ? "–" : this._money(r.total)}</strong>${partial}</td>
+          <td class="num">${r.base === null ? "–" : this._money(r.base)}</td>
+          ${meter ? `<td class="num">${avg}</td>` : ""}
+          <td class="num">${r.change === null ? "–" : `${r.change > 0 ? "+" : ""}${this._money(r.change)}`}</td>
+          <td class="num">${r.changePct === null ? "–" : this._delta(r.total, r.total - r.change)}</td>
+          <td class="num">${r.advances === null ? "–" : this._money(r.advances)}</td>
+          <td class="num">${r.result === null ? "–" : this._signedResult(r.result)}</td></tr>`;
+      })
+      .join("");
+    return `<div class="table-wrap"><table><thead><tr>
+      <th>${esc(this._t("year"))}</th><th>${esc(this._t("source"))}</th>
+      ${meter ? `<th class="num">${esc(this._t("consumption"))}</th>` : ""}
+      <th class="num">${esc(this._t("total_cost"))}</th><th class="num">${esc(this._t("base_cost"))}</th>
+      ${meter ? `<th class="num">${esc(this._t("avg_price"))}</th>` : ""}
+      <th class="num">${esc(this._t("change_prev"))}</th><th class="num">%</th>
+      <th class="num">${esc(this._t("advances"))}</th><th class="num">${esc(this._t("bill_result"))}</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  _exportCostsCsv() {
+    const data = this._costs;
+    if (!data) return;
+    const single = this._state.costMeter !== "all";
+    const meter = single ? data.meters[0] : null;
+    const years = single ? meter.years : data.total;
+    const header = ["year", "start", "end", "forecast", "source", "status", "consumption", "unit", "total_cost", "energy_cost", "base_cost", "avg_price", "avg_price_unit", "change", "change_pct", "advances", "result", "cost_coverage_pct"];
+    const rows = [header];
+    for (const y of years) {
+      rows.push([
+        y.label,
+        y.start,
+        y.end,
+        y.forecast ? 1 : 0,
+        y.total_cost === null ? y.gap_reason || "" : y.source || "",
+        y.status,
+        meter ? this._csvNum(y.consumption) : "",
+        meter ? meter.unit : "",
+        this._csvNum(y.total_cost),
+        this._csvNum(y.energy_cost),
+        this._csvNum(y.base_cost),
+        this._csvNum(y.avg_price ?? null),
+        y.avg_price_unit || "",
+        this._csvNum(y.change ?? null),
+        this._csvNum(y.change_pct ?? null),
+        this._csvNum(y.advances ?? null),
+        this._csvNum(y.result ?? null),
+        y.cost_coverage === undefined ? "" : this._csvNum(y.cost_coverage * 100),
+      ]);
+    }
+    this._download(`kosten_${meter ? meter.name : "alle"}_${data.mode}_${this._data.today}`, rows);
   }
 
   /* meters */
@@ -2234,7 +2630,12 @@ class EnergyTrackerPanel extends HTMLElement {
       if (!spec) continue;
       const width = box.clientWidth || 300;
       box._spec = spec;
-      if (spec.type === "bar") {
+      if (spec.type === "cost") {
+        box.innerHTML = renderCostChart(width, spec.height, spec, {
+          formatMoney: (v, step) => this._axis(v, step, false, true),
+          formatUnit: (v, step) => this._axis(v, step, false),
+        });
+      } else if (spec.type === "bar") {
         box.innerHTML = renderBarChart(width, spec.height, spec.groups, {
           id: box.dataset.chart,
           color: spec.color,
@@ -2260,6 +2661,10 @@ class EnergyTrackerPanel extends HTMLElement {
     }
     const box = target.closest("[data-chart]");
     const spec = box?._spec;
+    if (spec?.tooltip) {
+      this._showTooltip(ev, spec.tooltip(Number(target.dataset.idx)));
+      return;
+    }
     const group = spec?.groups?.[Number(target.dataset.idx)];
     if (!group) return;
     const b = group.bucket;
@@ -2276,6 +2681,10 @@ class EnergyTrackerPanel extends HTMLElement {
       html += `<hr><div>${esc(this._bucketLabel(c, spec.gran, true))}: ${fmt(c.total)} ${this._delta(b.total, c.total)}</div>`;
       if (c.cost !== null) html += `<div>${esc(this._t("cost"))}: ${this._money(c.cost)}</div>`;
     }
+    this._showTooltip(ev, html);
+  }
+
+  _showTooltip(ev, html) {
     const tip = this.shadowRoot.querySelector(".tooltip");
     tip.innerHTML = html;
     tip.style.display = "block";
@@ -2363,6 +2772,17 @@ class EnergyTrackerPanel extends HTMLElement {
         }
         break;
       }
+      case "cost-mode":
+        s.costMode = el.dataset.mode;
+        this._render();
+        await this._loadCosts();
+        break;
+      case "export-costs":
+        this._exportCostsCsv();
+        break;
+      case "clear-row":
+        for (const input of el.closest(".change-row").querySelectorAll("input")) input.value = "";
+        break;
       case "view-photo":
         await this._viewPhoto(el.dataset.id);
         break;
@@ -2453,6 +2873,17 @@ class EnergyTrackerPanel extends HTMLElement {
     const bind = el?.dataset?.bind;
     if (!bind) return;
     const s = this._state;
+    if (bind === "costMeter") {
+      s.costMeter = el.value;
+      this._render();
+      await this._loadCosts();
+      return;
+    }
+    if (bind === "costLine") {
+      s.costLine = el.checked;
+      this._render();
+      return;
+    }
     if (bind === "imp") {
       await this._onImportChange(el);
       return;
@@ -2538,6 +2969,21 @@ class EnergyTrackerPanel extends HTMLElement {
     } else if (kind === "contract") {
       const num = (key) => parseNum(data[key]);
       const changes = [];
+      const priceChanges = [];
+      for (let i = 0; data[`pc_date_${i}`] !== undefined; i++) {
+        if (!data[`pc_date_${i}`]) continue;
+        const value = (key) => {
+          const parsed = parseNum(data[`${key}_${i}`]);
+          return parsed === undefined || Number.isNaN(parsed) ? null : parsed;
+        };
+        priceChanges.push({
+          date: data[`pc_date_${i}`],
+          unit_price: value("pc_unit"),
+          base_price: value("pc_base"),
+          conversion_factor: data[`pc_factor_${i}`] === undefined ? null : value("pc_factor"),
+          note: data[`pc_note_${i}`] || "",
+        });
+      }
       for (let i = 0; data[`chg_date_${i}`] !== undefined; i++) {
         const amount = parseNum(data[`chg_amount_${i}`]);
         if (data[`chg_date_${i}`] && amount !== undefined && !Number.isNaN(amount)) changes.push({ date: data[`chg_date_${i}`], amount });
@@ -2557,6 +3003,7 @@ class EnergyTrackerPanel extends HTMLElement {
         payment_day: Number(data.payment_day) || 1,
         first_payment: data.first_payment || null,
         advance_changes: changes,
+        price_changes: priceChanges,
         notice_period: data.notice_period || null,
         note: data.note || null,
       };
@@ -2584,13 +3031,30 @@ class EnergyTrackerPanel extends HTMLElement {
         balance: data.result_type === "auto" || amount === null ? null : data.result_type === "refund" ? Math.abs(amount) : -Math.abs(amount),
         new_advance: num("new_advance"),
         new_advance_from: data.new_advance_from || null,
+        reading_start: num("reading_start"),
+        reading_end: num("reading_end"),
+        unit_price: num("unit_price"),
+        base_price: num("base_price"),
+        conversion_factor: data.conversion_factor === undefined ? undefined : num("conversion_factor"),
+        take_readings: Boolean(form.elements.take_readings?.checked),
         note: data.note || null,
       };
+      if (payload.conversion_factor === undefined) delete payload.conversion_factor;
       if (s.editBill) payload.bill_id = s.editBill;
-      if (await this._mutate("bill/save", payload)) {
+      try {
+        const result = await this._ws("bill/save", payload);
+        const imported = result.imported_readings || [];
+        const added = imported.filter((r) => r.status === "added").length;
+        const problems = imported
+          .filter((r) => r.status === "conflict")
+          .map((r) => this._t("readings_conflict", { date: this._date(r.date), value: this._num(r.value, 2), message: this._errorText(r) }));
+        if (problems.length) this._toast([added ? this._t("readings_imported", { added }) : "", ...problems].filter(Boolean).join("\n"), true);
+        else this._toast(added ? this._t("readings_imported", { added }) : this._t("saved"));
         s.showBillForm = false;
         s.editBill = null;
-        this._render();
+        await this._reload();
+      } catch (err) {
+        this._toast(this._errorText(err), true);
       }
     } else if (kind === "meter") {
       const payload = {
@@ -2821,6 +3285,28 @@ const STYLE = `
   tr.editing td { background:var(--secondary-background-color); }
   details summary { cursor:pointer; font-weight:500; }
   .readonly .admin-only { display:none !important; }
+  .chart .gap-bar { fill:none; stroke:var(--secondary-text-color); stroke-dasharray:4 4; opacity:.6; }
+  .chart .gap-text { font-size:10px; }
+  .chart .warn-fill { fill:var(--warning-color, #e65100); font-weight:bold; }
+  .chart .cons-line { stroke:var(--primary-text-color); stroke-width:2; opacity:.75; }
+  .chart .line-dot { fill:var(--primary-text-color); opacity:.75; }
+  .legend i.forecast-swatch { background:none; border:1.5px dashed var(--c); box-sizing:border-box; }
+  .legend i.line-swatch { height:2px; background:var(--primary-text-color); vertical-align:3px; }
+  tr.forecast-row td { font-style:italic; opacity:.8; }
+  tr.gap-row td { color:var(--secondary-text-color); }
+  .small { font-size:11px; }
+  .badge.source-calculated { background:rgba(3,169,244,.12); }
+  .badge.source-bill { background:rgba(67,160,71,.15); }
+  .badge.source-mixed { background:rgba(251,140,0,.15); }
+  .badge.source-gap { background:rgba(158,158,158,.2); }
+  .change-row .note-input { flex:1; min-width:120px; }
+  .timeline ol { list-style:none; margin:8px 0 0; padding:0 0 0 12px; border-left:2px solid var(--divider-color); }
+  .timeline li { display:flex; gap:10px; flex-wrap:wrap; padding:4px 0 4px 10px; position:relative; font-size:13px; }
+  .timeline li::before { content:""; position:absolute; left:-7px; top:9px; width:10px; height:10px; border-radius:50%; background:var(--accent, var(--primary-color)); }
+  .timeline li.tl-advance::before { background:var(--secondary-text-color); }
+  .timeline li.tl-end::before { background:var(--error-color, #c62828); }
+  .tl-date { min-width:84px; font-weight:500; }
+  .tl-kind { min-width:110px; color:var(--secondary-text-color); }
   .section-title { margin:24px 4px 12px; font-size:16px; font-weight:500; color:var(--secondary-text-color); text-transform:uppercase; letter-spacing:.04em; }
   .warn-text { color:var(--warning-color, #e65100); }
   .billing-facts em { font-style:normal; font-size:12px; }

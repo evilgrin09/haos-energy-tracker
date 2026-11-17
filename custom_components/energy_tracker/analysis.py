@@ -20,6 +20,7 @@ from .calc import (
     period_label,
     summarize,
 )
+from .costs import calendar_years, meter_cost_history, sum_years
 from .store import TrackerError, TrackerStore
 
 MIN_GOOD_DAYS = 90
@@ -257,3 +258,62 @@ def statistics(
             "summary": summarize(compare_buckets),
         }
     return result
+
+
+def cost_history(
+    store: TrackerStore, today: date, meter_id: str | None = None, mode: str = "calendar"
+) -> dict[str, Any]:
+    """Cost development over the years per meter and (without meter) in total."""
+    if meter_id is not None and meter_id not in store.meters:
+        raise TrackerError("not_found", f"Meter {meter_id} not found")
+    meter_ids = (
+        [meter_id]
+        if meter_id
+        else sorted(store.meters, key=lambda m: str(store.meters[m].get("name", "")).lower())
+    )
+    meters = []
+    for mid in meter_ids:
+        meter = store.meters[mid]
+        _day, month = billing_date_of(meter)
+        billing_periods_ = meter_periods(store, mid, today)
+        periods = billing_periods_ if mode == "billing" else calendar_years(billing_periods_[0][0], today)
+        # do not show years before any data
+        first_data = _first_data_day(store, mid)
+        if first_data is not None:
+            periods = [p for p in periods if p[1] >= first_data] or periods[-1:]
+        years = meter_cost_history(
+            store.model(mid),
+            store.tariffs(mid),
+            store.meter_bills(mid),
+            periods,
+            today,
+            str(meter.get("unit") or ""),
+            month,
+            mode,
+        )
+        meters.append(
+            {
+                "meter_id": mid,
+                "name": meter.get("name"),
+                "type": meter.get("type"),
+                "unit": meter.get("unit"),
+                "years": years,
+            }
+        )
+    return {
+        "mode": mode,
+        "today": today.isoformat(),
+        "meters": meters,
+        "total": sum_years([(m["name"], m["years"]) for m in meters]) if meter_id is None else None,
+    }
+
+
+def _first_data_day(store: TrackerStore, meter_id: str) -> date | None:
+    """First day with data: day after the first reading or start of the first bill."""
+    days = []
+    readings = store.meter_readings(meter_id)
+    if readings:
+        days.append(parse_date(readings[0]["date"]) + timedelta(days=1))
+    days.extend(parse_date(b["start_date"]) for b in store.meter_bills(meter_id))
+    days.extend(parse_date(c["start_date"]) for c in store.meter_contracts(meter_id))
+    return min(days) if days else None

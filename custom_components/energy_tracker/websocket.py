@@ -21,6 +21,8 @@ from .store import TrackerError, TrackerStore
 _DATE = vol.All(cv.string, cv.date)
 _OPT_FLOAT = vol.Any(None, vol.Coerce(float))
 _OPT_STR = vol.Any(None, cv.string)
+# empty: keep the previous price
+_OPT_PRICE = vol.Any(None, "", vol.Coerce(float))
 
 METER_SCHEMA = {
     vol.Optional("name"): vol.All(cv.string, vol.Length(min=1, max=100)),
@@ -64,6 +66,15 @@ CONTRACT_SCHEMA = {
             vol.Required("amount"): vol.All(vol.Coerce(float), vol.Range(min=0)),
         }
     ],
+    vol.Optional("price_changes"): [
+        {
+            vol.Required("date"): _DATE,
+            vol.Optional("unit_price"): _OPT_PRICE,
+            vol.Optional("base_price"): _OPT_PRICE,
+            vol.Optional("conversion_factor"): _OPT_PRICE,
+            vol.Optional("note"): _OPT_STR,
+        }
+    ],
     vol.Optional("notice_period"): _OPT_STR,
     vol.Optional("note"): _OPT_STR,
 }
@@ -80,6 +91,12 @@ BILL_SCHEMA = {
     vol.Optional("balance"): _OPT_FLOAT,
     vol.Optional("new_advance"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
     vol.Optional("new_advance_from"): vol.Any(None, "", _DATE),
+    # meter readings and prices according to the bill (information / control)
+    vol.Optional("reading_start"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
+    vol.Optional("reading_end"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
+    vol.Optional("unit_price"): _OPT_FLOAT,
+    vol.Optional("base_price"): _OPT_FLOAT,
+    vol.Optional("conversion_factor"): _OPT_FLOAT,
     vol.Optional("note"): _OPT_STR,
 }
 
@@ -378,6 +395,8 @@ def ws_contract_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, An
         data["advance_changes"] = [
             {"date": c["date"].isoformat(), "amount": c["amount"]} for c in msg["advance_changes"]
         ]
+    if "price_changes" in data:
+        data["price_changes"] = [{**c, "date": c["date"].isoformat()} for c in msg["price_changes"]]
     if not contract_id:
         for key in ("meter_id", "start_date"):
             if key not in data:
@@ -427,6 +446,8 @@ def ws_statistics(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any])
     {
         vol.Required("type"): f"{DOMAIN}/bill/save",
         vol.Optional("bill_id"): cv.string,
+        # store the meter readings of the bill as readings (where none exist)
+        vol.Optional("take_readings", default=False): cv.boolean,
         **BILL_SCHEMA,
     }
 )
@@ -437,13 +458,16 @@ def ws_bill_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) 
     """Create or update a bill of the utility."""
     data = _dates_to_str(msg)
     bill_id = data.pop("bill_id", None)
+    take_readings = data.pop("take_readings", False)
     if data.get("new_advance_from") == "":
         data["new_advance_from"] = None
     if not bill_id:
         for key in ("meter_id", "start_date", "end_date"):
             if key not in data:
                 raise TrackerError("invalid_format", f"Missing field {key}")
-    return store.save_bill(data, bill_id)
+    bill = store.save_bill(data, bill_id)
+    readings = store.readings_from_bill(bill) if take_readings else []
+    return {**bill, "imported_readings": readings}
 
 
 @websocket_api.websocket_command(
@@ -471,6 +495,20 @@ def ws_billing(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) ->
     return analysis.meter_billing(store, msg["meter_id"], dt_util.now().date(), msg.get("period_index"))
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/cost_history",
+        vol.Optional("meter_id"): vol.Any(None, cv.string),
+        vol.Optional("mode", default="calendar"): vol.In(["calendar", "billing"]),
+    }
+)
+@callback
+@_handler
+def ws_cost_history(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
+    """Return the cost development over the years."""
+    return analysis.cost_history(store, dt_util.now().date(), msg.get("meter_id"), msg["mode"])
+
+
 @callback
 def async_register(hass: HomeAssistant) -> None:
     """Register all websocket commands."""
@@ -491,5 +529,6 @@ def async_register(hass: HomeAssistant) -> None:
         ws_bill_delete,
         ws_statistics,
         ws_billing,
+        ws_cost_history,
     ):
         websocket_api.async_register_command(hass, command)

@@ -325,9 +325,35 @@ def next_bucket(d: date, granularity: str) -> date:
     raise ValueError(f"Unknown granularity {granularity}")
 
 
+@dataclass(slots=True, frozen=True)
+class PricePhase:
+    """Prices valid from ``start`` until the next price change."""
+
+    start: date
+    unit_price: float
+    base_price: float
+    conversion_factor: float
+    note: str = ""
+
+
+@dataclass(slots=True)
+class PriceChange:
+    """A price change within a contract; ``None`` keeps the previous value."""
+
+    day: date
+    unit_price: float | None = None
+    base_price: float | None = None
+    conversion_factor: float | None = None
+    note: str = ""
+
+
 @dataclass(slots=True)
 class Tariff:
-    """Contract / tariff data relevant for calculations."""
+    """Contract / tariff data relevant for calculations.
+
+    ``unit_price``, ``base_price`` and ``conversion_factor`` are the prices
+    from the contract start; ``price_changes`` change them from a date on.
+    """
 
     contract_id: str
     start: date
@@ -342,14 +368,48 @@ class Tariff:
     advance_changes: list[tuple[date, float]] = field(default_factory=list)
     provider: str = ""
     tariff: str = ""
+    price_changes: list[PriceChange] = field(default_factory=list)
+    phases: list[PricePhase] = field(init=False, default_factory=list)
+
+    def __post_init__(self) -> None:
+        phase = PricePhase(self.start, self.unit_price, self.base_price, self.conversion_factor)
+        self.phases = [phase]
+        for change in sorted(self.price_changes, key=lambda c: c.day):
+            phase = PricePhase(
+                change.day,
+                phase.unit_price if change.unit_price is None else change.unit_price,
+                phase.base_price if change.base_price is None else change.base_price,
+                phase.conversion_factor if change.conversion_factor is None else change.conversion_factor,
+                change.note,
+            )
+            if change.day <= self.start:
+                self.phases[0] = PricePhase(
+                    self.start, phase.unit_price, phase.base_price, phase.conversion_factor, phase.note
+                )
+            else:
+                self.phases.append(phase)
 
     def covers(self, d: date) -> bool:
         """Return True if the tariff is valid on ``d``."""
         return self.start <= d and (self.end is None or d <= self.end)
 
-    def day_cost(self, consumption: float) -> float:
-        """Cost of one day with the given consumption (incl. base price)."""
-        return consumption * self.conversion_factor * self.unit_price + self.base_price * 12 / 365
+    def phase_at(self, d: date) -> PricePhase:
+        """Prices valid on ``d``."""
+        current = self.phases[0]
+        for phase in self.phases[1:]:
+            if phase.start > d:
+                break
+            current = phase
+        return current
+
+    def day_cost(self, consumption: float, d: date) -> float:
+        """Cost of day ``d`` with the given consumption (incl. base price)."""
+        phase = self.phase_at(d)
+        return consumption * phase.conversion_factor * phase.unit_price + phase.base_price * 12 / 365
+
+    def factor_at(self, d: date) -> float:
+        """Conversion factor (billing units per meter unit) valid on ``d``."""
+        return self.phase_at(d).conversion_factor
 
     def advance_at(self, d: date) -> float:
         """Advance payment amount valid on ``d``."""
@@ -417,7 +477,7 @@ def aggregate(
         for d, value, kind in model.series(b_start, b_end, today):
             bucket[kind] += value
             if tariffs and (tariff := find_tariff(tariffs, d)):
-                cost += tariff.day_cost(value)
+                cost += tariff.day_cost(value, d)
                 bucket["cost_days"] += 1
         bucket["total"] = bucket[MEASURED] + bucket[ESTIMATED] + bucket[FORECAST]
         if bucket["cost_days"]:
@@ -545,21 +605,28 @@ def billing_forecast(
         tariff = find_tariff(tariffs, d)
         if tariff is None:
             near = nearest_tariff(tariffs, d)
-            billed += value * (near.conversion_factor if near else 1.0)
+            billed += value * (near.factor_at(d) if near else 1.0)
             if near:
-                full_cost += near.day_cost(value)
+                full_cost += near.day_cost(value, d)
             continue
         covered += 1
-        day_energy = value * tariff.conversion_factor * tariff.unit_price
-        day_base = tariff.base_price * 12 / 365
-        billed += value * tariff.conversion_factor
+        phase = tariff.phase_at(d)
+        day_energy = value * phase.conversion_factor * phase.unit_price
+        day_base = phase.base_price * 12 / 365
+        billed += value * phase.conversion_factor
         energy_cost += day_energy
         base_cost += day_base
         full_cost += day_energy + day_base
-        if not segments or segments[-1]["contract_id"] != tariff.contract_id:
+        # one segment per contract and price phase
+        if (
+            not segments
+            or segments[-1]["contract_id"] != tariff.contract_id
+            or segments[-1]["phase_start"] != phase.start.isoformat()
+        ):
             segments.append(
                 {
                     "contract_id": tariff.contract_id,
+                    "phase_start": phase.start.isoformat(),
                     "provider": tariff.provider,
                     "tariff": tariff.tariff,
                     "start": d.isoformat(),
@@ -567,8 +634,10 @@ def billing_forecast(
                     "days": 0,
                     "consumption": 0.0,
                     "consumption_billing_unit": 0.0,
-                    "unit_price": tariff.unit_price,
-                    "base_price": tariff.base_price,
+                    "unit_price": phase.unit_price,
+                    "base_price": phase.base_price,
+                    "conversion_factor": phase.conversion_factor,
+                    "note": phase.note,
                     "energy_cost": 0.0,
                     "base_cost": 0.0,
                 }
@@ -577,7 +646,7 @@ def billing_forecast(
         segment["end"] = d.isoformat()
         segment["days"] += 1
         segment["consumption"] += value
-        segment["consumption_billing_unit"] += value * tariff.conversion_factor
+        segment["consumption_billing_unit"] += value * phase.conversion_factor
         segment["energy_cost"] += day_energy
         segment["base_cost"] += day_base
 
@@ -739,4 +808,14 @@ def build_tariff(contract: dict[str, Any], extra_changes: Iterable[tuple[date, f
         advance_changes=sorted(changes.items()),
         provider=contract.get("provider") or "",
         tariff=contract.get("tariff") or "",
+        price_changes=[
+            PriceChange(
+                day=parse_date(change["date"]),
+                unit_price=_float(change.get("unit_price")),
+                base_price=_float(change.get("base_price")),
+                conversion_factor=_float(change.get("conversion_factor")),
+                note=change.get("note") or "",
+            )
+            for change in contract.get("price_changes") or []
+        ],
     )
