@@ -12,7 +12,7 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
-from . import analysis
+from . import analysis, importer
 from .calc import GRANULARITIES
 from .const import DOMAIN, METER_TYPES, PROFILES
 from .photo import PHOTO_ID_RE, async_archive_photo, async_discard_photo
@@ -223,6 +223,102 @@ def ws_reading_import(hass: HomeAssistant, store: TrackerStore, msg: dict[str, A
     return store.import_readings(msg["meter_id"], msg["readings"], msg["replace"])
 
 
+def _suggest_target(store: TrackerStore, name: str) -> dict[str, Any]:
+    """Suggest name, type, unit and an existing meter for an import file."""
+    suggestion: dict[str, Any] = importer.suggest_meter(name)
+    meters = list(store.meters.values())
+    wanted = suggestion["name"].casefold()
+    match = [m for m in meters if str(m.get("name", "")).casefold() == wanted]
+    if len(match) != 1 and suggestion["type"] != "other":
+        match = [m for m in meters if m.get("type") == suggestion["type"]]
+    suggestion["meter_id"] = match[0]["id"] if len(match) == 1 else None
+    return suggestion
+
+
+_IMPORT_TEXT = vol.All(cv.string, vol.Length(max=2_000_000))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/import/preview",
+        vol.Required("text"): _IMPORT_TEXT,
+        vol.Optional("name", default=""): cv.string,
+        vol.Optional("meter_id"): vol.Any(None, cv.string),
+        vol.Optional("suggest", default=False): cv.boolean,
+        vol.Optional("replace", default=False): cv.boolean,
+    }
+)
+@websocket_api.require_admin
+@callback
+@_handler
+def ws_import_preview(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
+    """Analyse a CSV text and show what an import would do (changes nothing)."""
+    suggestion = _suggest_target(store, msg["name"])
+    meter_id = msg.get("meter_id")
+    if msg["suggest"] and not meter_id:
+        meter_id = suggestion["meter_id"]
+    if meter_id and meter_id not in store.meters:
+        raise TrackerError("not_found", f"Meter {meter_id} not found")
+    parsed = importer.parse_csv(msg["text"])
+    existing = store.meter_readings(meter_id) if meter_id else []
+    return {
+        "name": msg["name"],
+        "meter_id": meter_id,
+        "suggestion": suggestion,
+        **importer.build_preview(parsed, existing, msg["replace"]),
+    }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/import/commit",
+        vol.Required("text"): _IMPORT_TEXT,
+        vol.Optional("meter_id"): vol.Any(None, cv.string),
+        vol.Optional("new_meter"): {
+            vol.Required("name"): vol.All(cv.string, vol.Length(min=1, max=100)),
+            vol.Required("meter_type"): vol.In(METER_TYPES),
+            vol.Required("unit"): vol.All(cv.string, vol.Length(min=1, max=20)),
+        },
+        vol.Optional("replace", default=False): cv.boolean,
+        vol.Optional("decisions", default=dict): {cv.string: vol.In(importer.DECISIONS)},
+    }
+)
+@websocket_api.require_admin
+@callback
+@_handler
+def ws_import_commit(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) -> dict[str, Any]:
+    """Import a CSV text into an existing or a new meter."""
+    meter_id = msg.get("meter_id")
+    new_meter = msg.get("new_meter")
+    if not meter_id and not new_meter:
+        raise TrackerError("invalid_format", "Either meter_id or new_meter is required")
+    if meter_id and meter_id not in store.meters:
+        raise TrackerError("not_found", f"Meter {meter_id} not found")
+    parsed = importer.parse_csv(msg["text"])
+    if not parsed.rows:
+        raise TrackerError("import_empty", "No valid readings found")
+    existing = store.meter_readings(meter_id) if meter_id else []
+    rows, undecided = importer.rows_to_import(parsed, existing, msg["replace"], msg["decisions"])
+    if undecided:
+        raise TrackerError("import_undecided", f"Decision missing for: {', '.join(undecided)}")
+    if not meter_id:
+        meter_id = store.save_meter(
+            {"name": new_meter["name"], "type": new_meter["meter_type"], "unit": new_meter["unit"]}
+        )["id"]
+    # import_readings notifies listeners, which also recalculates the
+    # statistics for the energy dashboard
+    skipped = len(importer.build_preview(parsed, existing, msg["replace"])["skipped_existing"])
+    result = store.import_readings(meter_id, rows, msg["replace"])
+    return {
+        "meter_id": meter_id,
+        "added": result["added"],
+        # days that already had a reading (existing readings are kept)
+        "skipped": skipped + result["skipped"],
+        "merged_lines": sum(m["count"] - 1 for m in parsed.merged),
+        "rejected": len(parsed.rejected),
+    }
+
+
 @websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/reading/delete", vol.Required("reading_id"): cv.string}
 )
@@ -320,6 +416,8 @@ def async_register(hass: HomeAssistant) -> None:
         ws_reading_save,
         ws_photo_discard,
         ws_reading_import,
+        ws_import_preview,
+        ws_import_commit,
         ws_reading_delete,
         ws_contract_save,
         ws_contract_delete,

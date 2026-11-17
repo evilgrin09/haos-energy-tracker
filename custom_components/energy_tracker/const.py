@@ -4,7 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "energy_tracker"
 NAME = "Energy Tracker"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 STORAGE_KEY = f"{DOMAIN}.data"
 STORAGE_VERSION = 1

@@ -85,11 +85,45 @@ const STRINGS = {
     no_readings: "Noch keine Zählerstände erfasst.",
     import_export: "Import / Export",
     import_hint:
-      "Eine Ablesung pro Zeile: Datum;Zählerstand[;Wechsel]. Datum als JJJJ-MM-TT oder TT.MM.JJJJ.",
+      "CSV-Export der iOS-App „Energy Tracker“ (eine Datei pro Zähler) oder eigenes Format: eine Ablesung pro Zeile als Datum;Zählerstand[;Wechsel][;Notiz]. Datum als JJJJ-MM-TT oder TT.MM.JJJJ, auch mit Uhrzeit. Eine Kopfzeile wird erkannt.",
     import: "Importieren",
-    export: "CSV exportieren",
-    imported: "{added} importiert, {skipped} übersprungen",
-    import_empty: "Keine gültigen Zeilen gefunden.",
+    import_files: "CSV-Dateien wählen …",
+    import_text_preview: "Text prüfen …",
+    import_title: "Import-Vorschau",
+    import_textfield: "Textfeld",
+    import_analysing: "Dateien werden geprüft …",
+    import_target: "Importieren in",
+    import_new_meter: "+ Neuen Zähler anlegen",
+    import_replace: "Bestehende Ablesungen dieses Zählers ersetzen ({n})",
+    import_period: "Zeitraum",
+    import_lines: "Zeilen",
+    import_new: "Neue Ablesungen",
+    import_merged: "Zusammengefasste Tages-Duplikate",
+    import_skipped: "Bereits vorhanden (übersprungen)",
+    import_rejected: "Verworfene Zeilen",
+    import_last: "Letzter Stand",
+    import_merged_item: "{date}: {count} Ablesungen, übernommen {kept} (späteste Uhrzeit), nicht übernommen: {dropped}",
+    import_rejected_item: "Zeile {line}: „{text}“ – {reason}",
+    import_flagged_title: "Bitte entscheiden: Diese Werte passen nicht zu den benachbarten Zählerständen",
+    import_decide: "– bitte wählen –",
+    import_decision_reset: "Zählerwechsel (neuer Zähler)",
+    import_decision_keep: "Trotzdem übernehmen",
+    import_decision_skip: "Nicht importieren",
+    import_undecided: "Bitte zuerst für alle markierten Werte entscheiden.",
+    import_name_missing: "Bitte einen Namen für den neuen Zähler eingeben.",
+    import_nothing: "Keine gültigen Ablesungen gefunden.",
+    import_nothing_new: "Alle Ablesungen sind bereits vorhanden.",
+    import_done: "{added} Ablesungen in {meters} Zähler importiert",
+    import_item_done: "Importiert: {added} neu, {skipped} bereits vorhanden",
+    flag_lower_than_previous: "kleiner als der Stand vom {date} ({value})",
+    flag_higher_than_next: "größer als der spätere Stand vom {date} ({value})",
+    reason_too_few_columns: "zu wenige Spalten",
+    reason_invalid_date: "Datum nicht erkannt",
+    reason_missing_value: "Zählerstand fehlt",
+    reason_invalid_value: "Zählerstand ist keine Zahl",
+    reason_negative_value: "negativer Zählerstand",
+    err_import_empty: "Keine gültigen Ablesungen gefunden.",
+    err_import_undecided: "Bitte zuerst für alle markierten Werte entscheiden.",
     granularity: "Auflösung",
     gran_day: "Tag",
     gran_week: "Woche",
@@ -268,11 +302,45 @@ const STRINGS = {
     no_readings: "No readings yet.",
     import_export: "Import / Export",
     import_hint:
-      "One reading per line: date;value[;replaced]. Date as YYYY-MM-DD or DD.MM.YYYY.",
+      "CSV export of the iOS app “Energy Tracker” (one file per meter) or simple format: one reading per line as date;value[;replaced][;note]. Date as YYYY-MM-DD or DD.MM.YYYY, optionally with time. A header line is recognised.",
     import: "Import",
-    export: "Export CSV",
-    imported: "{added} imported, {skipped} skipped",
-    import_empty: "No valid lines found.",
+    import_files: "Choose CSV files …",
+    import_text_preview: "Check text …",
+    import_title: "Import preview",
+    import_textfield: "Text field",
+    import_analysing: "Checking files …",
+    import_target: "Import into",
+    import_new_meter: "+ Create new meter",
+    import_replace: "Replace existing readings of this meter ({n})",
+    import_period: "Period",
+    import_lines: "Lines",
+    import_new: "New readings",
+    import_merged: "Combined same-day duplicates",
+    import_skipped: "Already present (skipped)",
+    import_rejected: "Rejected lines",
+    import_last: "Last reading",
+    import_merged_item: "{date}: {count} readings, used {kept} (latest time), not used: {dropped}",
+    import_rejected_item: "Line {line}: “{text}” – {reason}",
+    import_flagged_title: "Please decide: these values do not fit the neighbouring readings",
+    import_decide: "– please choose –",
+    import_decision_reset: "Meter replaced (new meter)",
+    import_decision_keep: "Import anyway",
+    import_decision_skip: "Do not import",
+    import_undecided: "Please decide for all marked values first.",
+    import_name_missing: "Please enter a name for the new meter.",
+    import_nothing: "No valid readings found.",
+    import_nothing_new: "All readings are already present.",
+    import_done: "{added} readings imported into {meters} meters",
+    import_item_done: "Imported: {added} new, {skipped} already present",
+    flag_lower_than_previous: "lower than the reading of {date} ({value})",
+    flag_higher_than_next: "higher than the later reading of {date} ({value})",
+    reason_too_few_columns: "too few columns",
+    reason_invalid_date: "date not recognised",
+    reason_missing_value: "reading missing",
+    reason_invalid_value: "reading is not a number",
+    reason_negative_value: "negative reading",
+    err_import_empty: "No valid readings found.",
+    err_import_undecided: "Please decide for all marked values first.",
     granularity: "Resolution",
     gran_day: "Day",
     gran_week: "Week",
@@ -855,12 +923,21 @@ class EnergyTrackerPanel extends HTMLElement {
       <div class="content"></div>
       <div class="tooltip"></div>
       <div class="modal-host"></div>
+      <div class="import-host"></div>
+      <input class="csv-input" type="file" accept=".csv,.txt,text/csv,text/plain" multiple hidden>
       <input class="photo-input" type="file" accept="image/*" capture="environment" hidden>
       <div class="toast"></div>`;
     this.shadowRoot.querySelector(".photo-input").addEventListener("change", (ev) => {
       const file = ev.target.files?.[0];
       ev.target.value = "";
       if (file) this._onPhotoSelected(file);
+    });
+    this.shadowRoot.querySelector(".csv-input").addEventListener("change", async (ev) => {
+      const files = [...(ev.target.files || [])];
+      ev.target.value = "";
+      if (!files.length) return;
+      const sources = await Promise.all(files.map(async (f) => ({ name: f.name, text: await f.text() })));
+      this._startImport(sources);
     });
     const menu = document.createElement("ha-menu-button");
     menu.hass = this._hass;
@@ -899,7 +976,9 @@ class EnergyTrackerPanel extends HTMLElement {
     let html = "";
     if (!this._data.meters.length && this._state.tab !== "meters") {
       html = `<div class="card empty">${esc(this._t("no_meters"))}<br><br>
-        <button class="primary admin-only" data-action="tab" data-tab="meters" data-new="1">${esc(this._t("add_first_meter"))}</button></div>`;
+        <button class="primary admin-only" data-action="tab" data-tab="meters" data-new="1">${esc(this._t("add_first_meter"))}</button>
+        <button class="flat admin-only" data-action="import-files">${esc(this._t("import_files"))}</button>
+        <p class="hint admin-only">${esc(this._t("import_hint"))}</p></div>`;
     } else {
       html = this[`_render_${this._state.tab}`]();
     }
@@ -1083,6 +1162,235 @@ class EnergyTrackerPanel extends HTMLElement {
       this._toast(this._errorText(err), true);
       return false;
     }
+  }
+
+  /* csv import */
+
+  async _startImport(sources) {
+    this._import = {
+      busy: true,
+      items: sources.map((src) => ({
+        name: src.name,
+        label: src.label || src.name,
+        text: src.text,
+        meterId: src.meterId || null,
+        target: src.meterId || "new",
+        newMeter: { name: "", type: "electricity", unit: "kWh" },
+        replace: false,
+        decisions: {},
+        preview: null,
+        error: null,
+        done: null,
+      })),
+    };
+    this._renderImport();
+    for (const item of this._import.items) await this._previewItem(item, true);
+    if (!this._import) return;
+    this._import.busy = false;
+    this._renderImport();
+  }
+
+  async _previewItem(item, initial) {
+    const req = { name: item.name, text: item.text, replace: item.replace };
+    if (initial) {
+      if (item.meterId) req.meter_id = item.meterId;
+      else req.suggest = true;
+    } else if (item.target !== "new") {
+      req.meter_id = item.target;
+    }
+    try {
+      const preview = await this._ws("import/preview", req);
+      item.preview = preview;
+      item.error = null;
+      if (initial) {
+        item.target = preview.meter_id || "new";
+        const sug = preview.suggestion;
+        item.newMeter = { name: sug.name, type: sug.type, unit: sug.unit };
+      }
+      const flagged = new Set(preview.flagged.map((f) => f.date));
+      for (const day of Object.keys(item.decisions)) if (!flagged.has(day)) delete item.decisions[day];
+    } catch (err) {
+      item.error = this._errorText(err);
+    }
+  }
+
+  async _onImportChange(el) {
+    const item = this._import?.items[Number(el.dataset.idx)];
+    if (!item) return;
+    const field = el.dataset.field;
+    if (field === "decision") {
+      if (el.value) item.decisions[el.dataset.date] = el.value;
+      else delete item.decisions[el.dataset.date];
+      return;
+    }
+    if (field === "name") {
+      item.newMeter.name = el.value;
+      return;
+    }
+    if (field === "unit") {
+      item.newMeter.unit = el.value;
+      return;
+    }
+    if (field === "type") {
+      item.newMeter.type = el.value;
+      item.newMeter.unit = DEFAULT_UNIT[el.value];
+    } else if (field === "target") {
+      item.target = el.value;
+      if (el.value === "new") item.replace = false;
+      await this._previewItem(item, false);
+    } else if (field === "replace") {
+      item.replace = el.checked;
+      await this._previewItem(item, false);
+    }
+    this._renderImport();
+  }
+
+  async _commitImport() {
+    const imp = this._import;
+    if (!imp || imp.busy) return;
+    const todo = imp.items.filter((item) => !item.done && item.preview && item.preview.days > 0);
+    for (const item of todo) {
+      if (item.preview.flagged.some((f) => !item.decisions[f.date])) {
+        this._toast(this._t("import_undecided"), true);
+        return;
+      }
+      if (item.target === "new" && !item.newMeter.name.trim()) {
+        this._toast(this._t("import_name_missing"), true);
+        return;
+      }
+    }
+    imp.busy = true;
+    this._renderImport();
+    let failed = false;
+    for (const item of todo) {
+      const req = { text: item.text, replace: item.replace, decisions: item.decisions };
+      if (item.target === "new") {
+        req.new_meter = { name: item.newMeter.name.trim(), meter_type: item.newMeter.type, unit: item.newMeter.unit };
+      } else {
+        req.meter_id = item.target;
+      }
+      try {
+        item.done = await this._ws("import/commit", req);
+        item.error = null;
+        // a retry must not create the meter a second time
+        item.target = item.done.meter_id;
+      } catch (err) {
+        item.error = this._errorText(err);
+        failed = true;
+      }
+    }
+    imp.busy = false;
+    const done = imp.items.filter((item) => item.done);
+    if (done.length) {
+      this._state.meterId = done[0].done.meter_id;
+      this._toast(
+        this._t("import_done", {
+          added: done.reduce((sum, item) => sum + item.done.added, 0),
+          meters: new Set(done.map((item) => item.done.meter_id)).size,
+        })
+      );
+    }
+    if (!failed) this._import = null;
+    this._renderImport();
+    if (done.length) await this._reload();
+  }
+
+  _importItemHtml(item, idx) {
+    const p = item.preview;
+    const title = `<div class="card-title">${esc(item.label || this._t("import_textfield"))}</div>`;
+    if (item.done) {
+      return `<div class="import-item">${title}<div class="notice good">${esc(this._t("import_item_done", item.done))}</div></div>`;
+    }
+    if (!p) {
+      return `<div class="import-item">${title}${item.error ? `<div class="notice bad">${esc(item.error)}</div>` : `<div class="photo-status"><div class="spinner"></div>${esc(this._t("import_analysing"))}</div>`}</div>`;
+    }
+    const attr = (field) => `data-bind="imp" data-idx="${idx}" data-field="${field}"`;
+    const isNew = item.target === "new";
+    const existingCount = isNew ? 0 : this._data.readings.filter((r) => r.meter_id === item.target).length;
+    const fact = (label, value, cls = "") => `<div class="${cls}"><span>${esc(label)}</span><strong>${value}</strong></div>`;
+    const list = (label, entries) =>
+      entries.length
+        ? `<details><summary>${esc(label)} (${entries.length})</summary><ul>${entries.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></details>`
+        : "";
+    let html = `<div class="import-item">${title}
+      ${item.error ? `<div class="notice bad">${esc(item.error)}</div>` : ""}
+      <div class="form-grid">
+        <label class="field"><span>${esc(this._t("import_target"))}</span>
+          <select ${attr("target")}>
+            ${this._data.meters.map((m) => `<option value="${m.id}" ${m.id === item.target ? "selected" : ""}>${esc(m.name)} (${esc(this._t(`type_${m.type}`))}, ${esc(m.unit)})</option>`).join("")}
+            <option value="new" ${isNew ? "selected" : ""}>${esc(this._t("import_new_meter"))}</option>
+          </select></label>
+        ${isNew ? `<label class="field"><span>${esc(this._t("name"))}</span><input ${attr("name")} maxlength="100" value="${esc(item.newMeter.name)}"></label>
+        <label class="field"><span>${esc(this._t("meter_type"))}</span><select ${attr("type")}>${METER_TYPES.map((t) => `<option value="${t}" ${t === item.newMeter.type ? "selected" : ""}>${esc(this._t(`type_${t}`))}</option>`).join("")}</select></label>
+        <label class="field"><span>${esc(this._t("unit"))}</span><select ${attr("unit")}>${UNITS.map((u) => `<option ${u === item.newMeter.unit ? "selected" : ""}>${u}</option>`).join("")}</select></label>` : ""}
+        ${!isNew && existingCount ? `<label class="check wide"><input type="checkbox" ${attr("replace")} ${item.replace ? "checked" : ""}> ${esc(this._t("import_replace", { n: existingCount }))}</label>` : ""}
+      </div>`;
+    if (!p.days) {
+      html += `<div class="notice warn">${esc(this._t("import_nothing"))}</div>`;
+    } else {
+      html += `<div class="billing-facts import-facts">
+        ${fact(this._t("import_period"), `${this._date(p.start)} – ${this._date(p.end)}`)}
+        ${fact(this._t("import_last"), `${this._num(p.last_value, 2)} (${this._date(p.end)})`)}
+        ${fact(this._t("import_lines"), p.data_lines)}
+        ${fact(this._t("import_new"), p.new, "strong")}
+        ${fact(this._t("import_merged"), p.merged_lines)}
+        ${fact(this._t("import_skipped"), p.skipped_existing.length)}
+        ${fact(this._t("import_rejected"), p.rejected.length, p.rejected.length ? "bad" : "")}
+      </div>`;
+      if (!p.new) html += `<div class="notice">${esc(this._t("import_nothing_new"))}</div>`;
+    }
+    html += list(
+      this._t("import_merged"),
+      p.merged.map((m) =>
+        this._t("import_merged_item", {
+          date: this._date(m.date),
+          count: m.count,
+          kept: this._num(m.kept, 2),
+          dropped: m.dropped.map((v) => this._num(v, 2)).join(" / "),
+        })
+      )
+    );
+    html += list(this._t("import_skipped"), p.skipped_existing.map((d) => this._date(d)));
+    html += list(
+      this._t("import_rejected"),
+      p.rejected.map((r) => this._t("import_rejected_item", { line: r.line, text: r.text, reason: this._t(`reason_${r.reason}`) }))
+    );
+    if (p.flagged.length) {
+      html += `<div class="notice warn">${esc(this._t("import_flagged_title"))}
+        <div class="table-wrap"><table><tbody>${p.flagged
+          .map(
+            (f) => `<tr><td>${this._date(f.date)}</td><td class="num"><strong>${this._num(f.value, 2)}</strong></td>
+            <td class="wrap">${esc(this._t(`flag_${f.reason}`, { date: this._date(f.other_date), value: this._num(f.other_value, 2) }))}</td>
+            <td><select ${attr("decision")} data-date="${f.date}">
+              <option value="">${esc(this._t("import_decide"))}</option>
+              ${["reset", "keep", "skip"].map((d) => `<option value="${d}" ${item.decisions[f.date] === d ? "selected" : ""}>${esc(this._t(`import_decision_${d}`))}</option>`).join("")}
+            </select></td></tr>`
+          )
+          .join("")}</tbody></table></div></div>`;
+    }
+    return html + `</div>`;
+  }
+
+  _renderImport() {
+    const host = this.shadowRoot?.querySelector(".import-host");
+    if (!host) return;
+    const imp = this._import;
+    if (!imp) {
+      host.innerHTML = "";
+      return;
+    }
+    const scroll = host.querySelector(".modal")?.scrollTop || 0;
+    const importable = imp.items.some((item) => !item.done && item.preview && item.preview.days > 0);
+    host.innerHTML = `<div class="modal-backdrop"><div class="modal wide-modal card">
+      <div class="card-title">${esc(this._t("import_title"))}</div>
+      ${imp.items.map((item, idx) => this._importItemHtml(item, idx)).join("")}
+      <div class="buttons end">
+        ${imp.busy ? `<div class="spinner"></div>` : ""}
+        <button type="button" class="flat" data-action="import-close">${esc(this._t(importable ? "cancel" : "close"))}</button>
+        <button type="button" class="primary" data-action="import-commit" ${imp.busy || !importable ? "disabled" : ""}>${esc(this._t("import"))}</button>
+      </div></div></div>`;
+    const modal = host.querySelector(".modal");
+    if (modal) modal.scrollTop = scroll;
   }
 
   _icon(type) {
@@ -1403,8 +1711,9 @@ class EnergyTrackerPanel extends HTMLElement {
     }
     html += `<div class="card"><details><summary>${esc(this._t("import_export"))}</summary>
       <p class="hint admin-only">${esc(this._t("import_hint"))}</p>
-      <form data-form="import"><textarea class="admin-only" name="csv" rows="6" placeholder="2025-01-01;12345,6"></textarea>
-      <div class="buttons"><button class="primary admin-only" type="submit">${esc(this._t("import"))}</button>
+      <form data-form="import"><div class="buttons admin-only"><button type="button" class="primary with-icon" data-action="import-files"><ha-icon icon="mdi:file-upload"></ha-icon>${esc(this._t("import_files"))}</button></div>
+      <textarea class="admin-only" name="csv" rows="5" placeholder="2025-01-01;12345,6"></textarea>
+      <div class="buttons"><button class="flat admin-only" type="submit">${esc(this._t("import_text_preview"))}</button>
       <button type="button" class="flat" data-action="export">${esc(this._t("export"))}</button>
       <button type="button" class="flat" data-action="export-all">${esc(this._t("export_all"))}</button></div></form></details></div>`;
     return html;
@@ -1651,6 +1960,16 @@ class EnergyTrackerPanel extends HTMLElement {
       case "photo-close":
         this._closePhoto();
         break;
+      case "import-files":
+        this.shadowRoot.querySelector(".csv-input").click();
+        break;
+      case "import-close":
+        this._import = null;
+        this._renderImport();
+        break;
+      case "import-commit":
+        await this._commitImport();
+        break;
       case "tab":
         s.tab = el.dataset.tab;
         s.editReading = null;
@@ -1768,6 +2087,10 @@ class EnergyTrackerPanel extends HTMLElement {
     const bind = el?.dataset?.bind;
     if (!bind) return;
     const s = this._state;
+    if (bind === "imp") {
+      await this._onImportChange(el);
+      return;
+    }
     if (bind === "photoMeter") {
       const last = this.shadowRoot.querySelector(".photo-last");
       if (last) last.textContent = this._photoLastText(el.value);
@@ -1841,18 +2164,11 @@ class EnergyTrackerPanel extends HTMLElement {
       this._toast(this._t("saved"));
       await this._reload();
     } else if (kind === "import") {
-      const rows = this._parseCsv(data.csv || "");
-      if (!rows.length) {
-        this._toast(this._t("import_empty"), true);
+      if (!(data.csv || "").trim()) {
+        this._toast(this._t("import_nothing"), true);
         return;
       }
-      try {
-        const result = await this._ws("reading/import", { meter_id: s.meterId, readings: rows });
-        this._toast(this._t("imported", result));
-        await this._reload();
-      } catch (err) {
-        this._toast(this._errorText(err), true);
-      }
+      this._startImport([{ name: "", label: this._t("import_textfield"), text: data.csv, meterId: s.meterId }]);
     } else if (kind === "contract") {
       const num = (key) => parseNum(data[key]);
       const payload = {
@@ -1909,25 +2225,6 @@ class EnergyTrackerPanel extends HTMLElement {
       this._toast(this._errorText(err), true);
       return false;
     }
-  }
-
-  _parseCsv(text) {
-    const rows = [];
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line) continue;
-      const sep = line.includes(";") ? ";" : line.includes("\t") ? "\t" : ",";
-      const cols = line.split(sep).map((c) => c.trim().replace(/^"|"$/g, ""));
-      let date = cols[0];
-      const de = date.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-      if (de) date = `${de[3]}-${de[2].padStart(2, "0")}-${de[1].padStart(2, "0")}`;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-      const num = parseNum(cols[1]);
-      if (!Number.isFinite(num)) continue;
-      const flag = (cols[2] || "").toLowerCase();
-      rows.push({ date, value: num, reset: ["1", "x", "true", "ja", "yes", "wechsel", "replaced"].includes(flag), note: cols[3] || undefined });
-    }
-    return rows;
   }
 
   _csvField(value) {
@@ -2121,6 +2418,15 @@ const STYLE = `
   tr.editing td { background:var(--secondary-background-color); }
   details summary { cursor:pointer; font-weight:500; }
   .readonly .admin-only { display:none !important; }
+  .wide-modal { width:min(100%, 760px); }
+  .import-item { border-top:1px solid var(--divider-color); padding:14px 0; }
+  .import-item details { margin-top:8px; font-size:13px; }
+  .import-item details ul { margin:6px 0 0; padding-left:20px; color:var(--secondary-text-color); max-height:180px; overflow:auto; }
+  .import-facts { margin-top:12px; }
+  .import-facts .bad strong { color:var(--error-color, #c62828); }
+  .import-item .notice { margin:12px 0 0; }
+  .import-item td.wrap { white-space:normal; }
+  .import-item td select { max-width:100%; }
   .photo-preview.large { max-height:70vh; }
   .actions-row { display:flex; justify-content:flex-end; margin-bottom:12px; }
   button.with-icon { display:inline-flex; align-items:center; gap:8px; --mdc-icon-size:20px; }

@@ -11,6 +11,7 @@ Die Idee stammt von der iOS-App „Energy Tracker“. Das hier ist eine eigenst�
   - Plausibilitätsprüfung: Ein Stand darf nicht kleiner als der vorherige sein.
   - **Zählerwechsel**: Den Anfangsstand des neuen Zählers als „Zählerwechsel“ markieren.
 - **Energie-Dashboard**: Pro Zähler schreibt die Integration eine Statistik (Verbrauch und, mit Vertrag, Kosten), die du im Energie-Dashboard von Home Assistant auswählen kannst (siehe [Energie-Dashboard](#energie-dashboard)).
+- **Import aus der iOS-App „Energy Tracker“**: Die CSV-Exporte der App lassen sich direkt hochladen, mit Vorschau vor dem Import (siehe [Daten aus der iOS-App Energy Tracker übernehmen](#daten-aus-der-ios-app-energy-tracker-übernehmen)).
 - **CSV-Export**: Zählerstände eines Zählers, aller Zähler oder die gerade angezeigte Auswertung (siehe [CSV-Export](#csv-export)).
 - **Zählerstand per Foto**: Zähler fotografieren, die Integration liest Zählernummer und Zählerstand aus dem Bild und ordnet das Foto über die Zählernummer automatisch dem richtigen Zähler zu (siehe [Zählerstand per Foto](#zählerstand-per-foto)).
 - **Auswertung** mit der Auflösung **Tag / Woche / Monat / Jahr** und freier Navigation durch die Zeiträume.
@@ -59,13 +60,40 @@ Wenn du die Integration entfernst, werden die gespeicherten Zähler, Zählerstä
 Nach der Einrichtung erscheint in der Seitenleiste **Energy Tracker**. Titel und Sichtbarkeit änderst du in den Optionen der Integration.
 
 1. **Zähler** anlegen. Optional: Verbrauchsprofil und Referenz-Jahresverbrauch.
-2. **Zählerstände** erfassen, am besten mit einem Anfangsstand zum Vertragsbeginn. Historische Werte lassen sich per CSV einfügen:
+2. **Zählerstände** erfassen, am besten mit einem Anfangsstand zum Vertragsbeginn. Historische Werte lassen sich per CSV importieren (Reiter „Zählerstände“ → „Import / Export“), als Datei oder über das Textfeld:
    ```
    2025-01-01;12345,6
-   01.02.2025;12560,1
+   01.02.2025 18:30;12560,1
    15.03.2025;0;wechsel
    ```
 3. **Vertrag** anlegen. Mit Preisen und Abschlag zeigen Übersicht und Vertragsseite die erwartete Nachzahlung oder Erstattung.
+
+### Daten aus der iOS-App Energy Tracker übernehmen
+
+**Export in der iOS-App**
+
+1. In der App den Zähler öffnen.
+2. Über Teilen/Export die Zählerstände als **CSV** exportieren und die Datei so ablegen, dass du sie am Gerät mit Home Assistant öffnen kannst (z. B. in „Dateien“ sichern oder per AirDrop/Mail übertragen).
+3. Das für jeden Zähler wiederholen. Die App erzeugt eine Datei pro Zähler, z. B. `Nebenkosten / Strom - Zählerstände.csv`.
+
+**Import im Panel**
+
+1. Reiter **Zählerstände** → **Import / Export** → **CSV-Dateien wählen …** und alle Dateien auf einmal auswählen.
+2. Die **Import-Vorschau** zeigt pro Datei:
+   - den Zielzähler. Vorgeschlagen wird ein bestehender Zähler mit passendem Namen oder passender Art, sonst „Neuen Zähler anlegen“ mit Name, Art und Einheit aus dem Dateinamen (Strom → kWh, Gas → m³, Wasser → m³). Alles ist vor dem Import änderbar.
+   - Zeitraum, letzten Stand, Anzahl der Zeilen und der neuen Ablesungen,
+   - zusammengefasste Tages-Duplikate, bereits vorhandene (übersprungene) Tage und verworfene Zeilen mit Grund.
+3. Optional **„Bestehende Ablesungen dieses Zählers ersetzen“** ankreuzen. Ohne Haken bleiben vorhandene Ablesungen erhalten und Tage, die es schon gibt, werden übersprungen.
+4. **Importieren**. Danach wird die Statistik fürs Energie-Dashboard automatisch neu berechnet.
+
+**Was beim Import passiert**
+
+- Die Uhrzeit wird abgeschnitten, gespeichert wird ein Zählerstand pro Tag. Gibt es mehrere Ablesungen an einem Tag, gilt die mit der spätesten Uhrzeit.
+- Die Spalte „Beschreibung“ wird als Notiz übernommen.
+- Die App exportiert weder Einheit noch Zählerwechsel. Die Einheit legst du beim Zähler fest. Ist ein Wert kleiner als der vorherige Stand, wird er nicht stillschweigend verworfen: Die Vorschau markiert ihn, und du entscheidest pro Wert zwischen „Zählerwechsel“, „Trotzdem übernehmen“ und „Nicht importieren“. Vorher lässt sich nichts importieren.
+- Verträge, Preise und Abschläge stehen nicht im Export und müssen im Reiter „Verträge“ neu angelegt werden.
+
+Das Textfeld an derselben Stelle nimmt dieselben Formate an und läuft durch dieselbe Vorschau. Importiert wird dabei in den oben gewählten Zähler.
 
 ### Zählerstand per Foto
 
