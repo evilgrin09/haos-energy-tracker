@@ -738,6 +738,7 @@ def compare_bill(bill: dict[str, Any], own: dict[str, Any]) -> dict[str, Any]:
         }
 
     in_billing_unit = bill.get("consumption_unit") == "billing"
+    plausibility = bill_plausibility(bill, own)
     own_consumption = own["consumption_billing_unit"] if in_billing_unit else own["consumption"]["total"]
     has_cost = own["cost_coverage"] > 0
     bill_balance = bill_result(bill)
@@ -749,7 +750,48 @@ def compare_bill(bill: dict[str, Any], own: dict[str, Any]) -> dict[str, Any]:
         ),
         "balance": deviation(bill_balance, own["balance"] if has_cost else None),
         "cost_coverage": own["cost_coverage"],
+        "plausibility": plausibility,
     }
+
+
+# A billed consumption that differs more than this from the own readings is
+# reported (the bill can still be saved).
+PLAUSIBILITY_MAX_DEVIATION_PCT = 25.0
+# The own readings must cover most of the bill period for the check.
+PLAUSIBILITY_MIN_MEASURED_SHARE = 0.8
+
+
+def bill_plausibility(bill: dict[str, Any], own: dict[str, Any]) -> dict[str, Any]:
+    """Compare the billed consumption with the own readings (meter unit).
+
+    A consumption in the billing unit (e.g. kWh for gas) is converted with
+    the conversion factor of the bill or, if missing, the one of the tariffs.
+    The check needs a measured share of at least 80 % in the bill period.
+    """
+    result: dict[str, Any] = {
+        "checked": False,
+        "warning": False,
+        "bill": None,
+        "own": own["consumption"]["total"],
+        "pct": None,
+        "measured_share": own["measured_share"],
+        "max_pct": PLAUSIBILITY_MAX_DEVIATION_PCT,
+    }
+    consumption = _float(bill.get("consumption"))
+    if consumption is None:
+        return result
+    if bill.get("consumption_unit") == "billing":
+        factor = _float(bill.get("conversion_factor"))
+        if not factor and own["consumption"]["total"]:
+            factor = own["consumption_billing_unit"] / own["consumption"]["total"]
+        consumption = consumption / factor if factor else consumption
+    result["bill"] = consumption
+    own_total = own["consumption"]["total"]
+    if own_total <= 0 or own["measured_share"] < PLAUSIBILITY_MIN_MEASURED_SHARE:
+        return result
+    pct = (consumption - own_total) / own_total * 100
+    result.update(checked=True, pct=pct, warning=abs(pct) > PLAUSIBILITY_MAX_DEVIATION_PCT)
+    return result
 
 
 def _float(value: Any) -> float | None:

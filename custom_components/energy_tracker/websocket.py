@@ -469,7 +469,13 @@ def ws_bill_save(hass: HomeAssistant, store: TrackerStore, msg: dict[str, Any]) 
                 raise TrackerError("invalid_format", f"Missing field {key}")
     bill = store.save_bill(data, bill_id)
     readings = store.readings_from_bill(bill) if take_readings else []
-    return {**bill, "imported_readings": readings}
+    # warn (but save) if the billed consumption does not fit the own readings
+    details = analysis.bill_details(store, bill, dt_util.now().date())
+    return {
+        **bill,
+        "imported_readings": readings,
+        "plausibility": details["comparison"]["plausibility"],
+    }
 
 
 @websocket_api.websocket_command(

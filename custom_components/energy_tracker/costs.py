@@ -37,6 +37,7 @@ from .calc import (
 SOURCE_CALCULATED = "calculated"
 SOURCE_BILL = "bill"
 SOURCE_MIXED = "mixed"
+SOURCE_BILL_EXTRAPOLATED = "bill_extrapolated"
 GAP_NO_TARIFF = "no_tariff"
 GAP_NO_DATA = "no_data"
 STATUS_COMPLETE = "complete"
@@ -55,6 +56,11 @@ KIND_OWN = "own"
 KIND_NO_TARIFF = "no_tariff"
 KIND_NO_DATA = "no_data"
 KIND_ESTIMATED = "estimated"
+KIND_BILL_EXTRAPOLATED = "bill_extrapolated"
+
+# Days without tariff next to a bill (e.g. between the last reading of a bill
+# and the billing date) are valued with the prices of that bill.
+MAX_BILL_EXTRAPOLATION_DAYS = 45
 
 
 @dataclass(slots=True)
@@ -71,6 +77,10 @@ class BillDay:
     base_cost: float | None
     consumption: float
     consumption_billing: float
+    # True: day outside the bill, valued with the prices of the bill
+    extrapolated: bool = False
+    measured: float = 0.0
+    forecast: float = 0.0
 
     @property
     def split_known(self) -> bool:
@@ -82,16 +92,65 @@ def _num(value: Any) -> float | None:
     return None if value is None or value == "" else float(value)
 
 
+@dataclass(slots=True)
+class _BillPrices:
+    """Prices derived from a bill, used for neighbouring days without tariff."""
+
+    bill_id: str
+    start: date
+    end: date
+    factor: float
+    unit_price: float | None  # per billing unit, as stated on the bill
+    base_price: float | None  # per month, as stated on the bill
+    per_unit_total: float | None  # total cost / consumption (meter unit)
+    per_unit_energy: float | None  # energy cost / consumption, if the split is known
+    base_per_day: float | None
+
+    def day(self, value: float, kind: str) -> BillDay:
+        """Cost of a day with the given consumption (meter unit)."""
+        if self.unit_price is not None and self.base_price is not None:
+            energy: float | None = value * self.factor * self.unit_price
+            base: float | None = self.base_price * 12 / 365
+            total = energy + base  # type: ignore[operator]
+        elif self.per_unit_energy is not None and self.base_per_day is not None:
+            energy = value * self.per_unit_energy
+            base = self.base_per_day
+            total = energy + base
+        else:
+            energy = base = None
+            total = value * (self.per_unit_total or 0.0)
+        return BillDay(
+            bill_id=self.bill_id,
+            total_cost=total,
+            energy_cost=energy,
+            base_cost=base,
+            consumption=value,
+            consumption_billing=value * self.factor,
+            extrapolated=True,
+            measured=value if kind == MEASURED else 0.0,
+            forecast=value if kind == FORECAST else 0.0,
+        )
+
+
 def bill_days(
-    model: ConsumptionModel, tariffs: list[Tariff], bills: list[dict[str, Any]], today: date
+    model: ConsumptionModel,
+    tariffs: list[Tariff],
+    bills: list[dict[str, Any]],
+    today: date,
+    extrapolate: bool = True,
 ) -> dict[date, BillDay]:
     """Distribute the recorded bills over their days.
 
     The energy part follows the daily consumption of the model (seasonal
     profile), the base part is spread evenly.  Bills without total cost are
     ignored.  If bills overlap, the later one (by end date) wins.
+
+    With ``extrapolate`` days without tariff and without bill that lie at
+    most MAX_BILL_EXTRAPOLATION_DAYS before or after a bill get the prices of
+    the nearest bill (``extrapolated=True``).  Only days with consumption data.
     """
     result: dict[date, BillDay] = {}
+    prices: list[_BillPrices] = []
     for bill in sorted(bills, key=lambda b: (b["end_date"], b["start_date"])):
         total = _num(bill.get("total_cost"))
         if total is None:
@@ -137,7 +196,44 @@ def bill_days(
                 base_cost=base,
                 consumption=day_consumption,
                 consumption_billing=day_consumption * factor,
+                measured=day_consumption,
             )
+
+        units = consumption if consumption is not None else own_total
+        prices.append(
+            _BillPrices(
+                bill_id=bill["id"],
+                start=start,
+                end=end,
+                factor=factor,
+                unit_price=_num(bill.get("unit_price")),
+                base_price=base_price,
+                per_unit_total=total / units if units > 0 else None,
+                per_unit_energy=(total - base_total) / units
+                if units > 0 and base_total is not None
+                else None,
+                base_per_day=base_total / days if base_total is not None and days else None,
+            )
+        )
+
+    if extrapolate and prices and model.first_day is not None:
+        data_start = model.first_day + timedelta(days=1)
+        nearest: dict[date, tuple[int, int, _BillPrices]] = {}
+        for order, bill_prices in enumerate(prices):
+            for offset in range(1, MAX_BILL_EXTRAPOLATION_DAYS + 1):
+                for d in (
+                    bill_prices.start - timedelta(days=offset),
+                    bill_prices.end + timedelta(days=offset),
+                ):
+                    if d in result or d < data_start or find_tariff(tariffs, d) is not None:
+                        continue
+                    # nearest bill wins, on a tie the later one
+                    candidate = (offset, -order, bill_prices)
+                    if d not in nearest or candidate[:2] < nearest[d][:2]:
+                        nearest[d] = candidate
+        for d, (_offset, _order, bill_prices) in nearest.items():
+            value, kind = model.day(d, today)
+            result[d] = bill_prices.day(value, kind)
     return result
 
 
@@ -176,13 +272,14 @@ def _day_records(
             uses_factor = uses_factor or abs(share.consumption_billing - share.consumption) > 1e-9
             records.append(
                 _Day(
-                    kind=KIND_BILL,
+                    kind=KIND_BILL_EXTRAPOLATED if share.extrapolated else KIND_BILL,
                     total=share.total_cost,
                     energy=share.energy_cost,
                     base=share.base_cost,
                     consumption=share.consumption,
                     consumption_billing=share.consumption_billing,
-                    measured=share.consumption,
+                    measured=share.measured,
+                    forecast=share.forecast,
                     bill_id=share.bill_id,
                 )
             )
@@ -286,6 +383,7 @@ def period_costs(
     cost_days = [r for r in records if r.has_cost]
     data_days = [r for r in records if r.consumption is not None]
     bill_count = sum(1 for r in records if r.kind == KIND_BILL)
+    extrapolated_days = sum(1 for r in records if r.kind == KIND_BILL_EXTRAPOLATED)
     own_count = sum(1 for r in records if r.kind == KIND_OWN)
     if not cost_days:
         status = STATUS_GAP
@@ -295,12 +393,16 @@ def period_costs(
         status = STATUS_COMPLETE
     if not cost_days:
         source = None
-    elif not own_count:
-        source = SOURCE_BILL if bill_count else SOURCE_CALCULATED
-    elif not bill_count:
-        source = SOURCE_CALCULATED
-    else:
+    elif own_count and (bill_count or extrapolated_days):
         source = SOURCE_MIXED
+    elif own_count:
+        source = SOURCE_CALCULATED
+    elif extrapolated_days:
+        source = SOURCE_BILL_EXTRAPOLATED
+    elif bill_count:
+        source = SOURCE_BILL
+    else:
+        source = SOURCE_CALCULATED  # only estimated edge days
 
     total_cost = math.fsum(r.total for r in cost_days) if cost_days else None  # type: ignore[misc]
     split_known = bool(cost_days) and all(r.energy is not None for r in cost_days)
@@ -338,6 +440,7 @@ def period_costs(
         "source": source,
         "forecast": end > today,
         "estimated_days": estimated_days,
+        "extrapolated_days": extrapolated_days,
         "consumption": consumption,
         "consumption_billing": consumption_billing,
         "consumption_forecast": forecast,
@@ -381,16 +484,23 @@ def meter_cost_history(
         year["advances_source"] = SOURCE_CALCULATED if own_advances else None
         year["result"] = None
         year["result_source"] = None
+        year["result_incomplete"] = False
+        year["bill_count"] = 0
         if mode == "billing":
+            # all bills ending in the period, e.g. annual bill + final bill on a change of supplier
             matching = [b for b in bills if start <= parse_date(b["end_date"]) <= end]
+            year["bill_count"] = len(matching)
             if matching:
-                bill = matching[-1]
-                if bill.get("advances_paid") is not None:
-                    year["advances"] = float(bill["advances_paid"])
+                paid = [_num(b.get("advances_paid")) for b in matching]
+                results = [bill_result(b) for b in matching]
+                if any(value is not None for value in paid):
+                    year["advances"] = math.fsum(value for value in paid if value is not None)
                     year["advances_source"] = SOURCE_BILL
-                if (result := bill_result(bill)) is not None:
-                    year["result"] = result
+                if any(value is not None for value in results):
+                    year["result"] = math.fsum(value for value in results if value is not None)
                     year["result_source"] = SOURCE_BILL
+                    # some bills without payments or result: sum of the known values only
+                    year["result_incomplete"] = any(value is None for value in paid + results)
             if year["result"] is None and year["advances"] is not None and year["status"] == STATUS_COMPLETE:
                 year["result"] = year["advances"] - year["total_cost"]
                 year["result_source"] = SOURCE_CALCULATED

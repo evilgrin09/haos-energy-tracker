@@ -374,4 +374,8 @@ async def test_cost_statistic_with_bill_only(recorder_mock, hass: HomeAssistant,
     await _sync(hass)
     rows = await _rows(hass, cost_statistic_id(meter["id"]))
     assert rows[5 * 24 - 1]["sum"] == pytest.approx(60.0)
-    assert rows[-1]["sum"] == pytest.approx(60.0)  # no tariff afterwards
+    # no tariff afterwards: the following days get the price of the bill
+    # (60 EUR / 120 kWh = 0.50 EUR per kWh, 1 kWh per hour)
+    assert rows[5 * 24]["state"] == pytest.approx(0.5)
+    assert rows[-1]["sum"] == pytest.approx(60.0 + (254 - 120) * 0.5)
+    _assert_continuous(rows)

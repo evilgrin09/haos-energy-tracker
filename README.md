@@ -129,7 +129,8 @@ Abrechnungen lassen sich für jeden Zeitraum erfassen, auch ohne Ablesungen oder
    - Gibt es für einen Tag schon eine Ablesung, bleibt sie unverändert.
    - Hat der Versorger den Endstand nur geschätzt, setzt du **„Endstand ist geschätzt“**. Dann wird nur der Anfangsstand übernommen.
    - Passt ein Stand nicht zu den vorhandenen Ablesungen (z. B. höher als eine spätere Ablesung), wird er nicht übernommen und als Hinweis angezeigt.
-5. Ältere **Verträge mit Preisänderungen** nachtragen. Dann rechnet die Integration auch die Jahre ohne erfasste Abrechnung.
+5. **Plausibilitätsprüfung:** Weicht der Verbrauch laut Abrechnung (umgerechnet in die Zählereinheit) um mehr als 25 % vom Verbrauch aus deinen eigenen Ablesungen im selben Zeitraum ab, erscheint beim Speichern und in der Liste der Abrechnungen eine Warnung. Gespeichert wird trotzdem. Geprüft wird nur, wenn deine Ablesungen mindestens 80 % des Zeitraums abdecken. Häufige Ursache ist die falsche Einheit (kWh statt m³).
+6. Ältere **Verträge mit Preisänderungen** nachtragen. Dann rechnet die Integration auch die Jahre ohne erfasste Abrechnung.
 
 In der **Auswertung** gibt es zusätzlich die Auflösung **Abrechnungsjahr**: die Monate eines Abrechnungsjahres (z. B. 2025/26), auf Wunsch mit dem Vorjahreszeitraum zum Vergleich.
 
@@ -236,9 +237,16 @@ Der Reiter **Kosten** zeigt die Kosten über alle Jahre, für einen Zähler oder
 - **Vorrang der Abrechnung:** Liegt für einen Zeitraum eine Abrechnung mit Gesamtkosten vor, gelten deren Werte, in der Kostenentwicklung und in der Kostenstatistik fürs Energie-Dashboard. Die Kosten werden dafür auf die Tage verteilt: der Arbeitspreis-Anteil nach dem Verbrauchsprofil, der Grundpreis gleichmäßig.
 - **Aufteilung Arbeits-/Grundpreis:** Den Grundpreis-Anteil nimmt die Integration aus dem Grundpreis der Abrechnung, sonst aus dem Tarif, wenn er den ganzen Zeitraum abdeckt. Ist beides nicht vorhanden, bleibt die Aufteilung **unbekannt**: Das Diagramm zeigt dann einen einfarbigen Balken „Gesamt“, die Tabelle beim Grundpreis „?“.
 - **Lücken statt 0 €:** Jahre ohne Daten (vor der ersten Ablesung bzw. Abrechnung) oder ohne Tarif erscheinen als gestrichelter, leerer Balken mit „keine Daten“ bzw. „kein Tarif“.
+- **Tage zwischen Abrechnung und Stichtag:** Laufen deine Abrechnungen von Ablesung zu Ablesung (z. B. 09.09.2025–07.09.2026), das Abrechnungsjahr aber bis zum 30.09., haben die Tage dazwischen oft weder Abrechnung noch Tarif. Solche Tage ohne Tarif, die höchstens 45 Tage vor oder nach einer Abrechnung liegen, bewertet die Integration mit dem Preis dieser Abrechnung:
+  - mit Arbeits- und Grundpreis laut Abrechnung, wenn beide erfasst sind,
+  - sonst mit dem effektiven Preis (Gesamtkosten ÷ Verbrauch laut Abrechnung).
+  - Liegt ein Tag zwischen zwei Abrechnungen, gilt die nähere.
+  - Die Quelle heißt dann „laut Abrechnung (hochgerechnet)“, mit dem Hinweis „x Tage mit Preis aus Abrechnung geschätzt“. Dieselben Tageskosten stehen auch in der Kostenstatistik fürs Energie-Dashboard.
+  - Gibt es für diese Tage einen Tarif, gilt der Tarif.
 - **Kleine Lücken am Rand eines Jahres:** Fehlen am Anfang oder Ende eines Jahres höchstens 7 Tage (z. B. erste Ablesung am 01.01.), werden diese Tage mit dem Tagesdurchschnitt der benachbarten 7 Tage geschätzt. Das Jahr gilt dann als vollständig, mit dem Hinweis „x Tage geschätzt“.
 - **Unvollständige Jahre** (größere Lücken oder Lücken mitten im Jahr) sind mit „!“ und dem abgedeckten Anteil markiert. Für sie gibt es keinen Durchschnittspreis und keinen Vorjahresvergleich.
 - **Ergebnis** (Erstattung/Nachzahlung) gibt es nur beim Abrechnungsjahr: aus der Abrechnung oder, für vollständig berechnete Jahre, als Abschläge − Kosten.
+- **Mehrere Abrechnungen in einem Abrechnungsjahr** (z. B. Jahresabrechnung und Schlussrechnung beim Versorgerwechsel): Abschläge und Ergebnisse aller Abrechnungen, deren Enddatum im Jahr liegt, werden addiert. Fehlen bei einer davon die Abschläge oder das Ergebnis, zählen nur die vorhandenen Angaben, und das Ergebnis ist mit „!“ als unvollständig markiert.
 - In der Summe aller Zähler werden nur Kosten addiert, nicht der Verbrauch (unterschiedliche Einheiten). Jahre, in denen ein Zähler fehlt, sind als unvollständig markiert.
 - **CSV-Export** der Tabelle über „Tabelle als CSV exportieren“.
 

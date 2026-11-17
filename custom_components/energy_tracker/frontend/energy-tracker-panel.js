@@ -55,6 +55,12 @@ const STRINGS = {
     source_calculated: "berechnet",
     source_bill: "laut Abrechnung",
     source_mixed: "gemischt",
+    source_bill_extrapolated: "laut Abrechnung (hochgerechnet)",
+    days_bill_price: "{n} Tage mit Preis aus Abrechnung geschätzt",
+    result_incomplete: "unvollständig: nicht bei allen Abrechnungen sind Abschläge bzw. Ergebnis erfasst",
+    bills_in_year: "{n} Abrechnungen",
+    plausibility_warning: "Verbrauch laut Abrechnung weicht um {pct} % von den eigenen Ablesungen ab ({bill} statt {own} {unit}). Bitte Verbrauch, Einheit und Zeitraum prüfen.",
+    plausibility_short: "Verbrauch {pct} % gegenüber eigenen Ablesungen",
     gap_no_tariff: "kein Tarif",
     gap_no_data: "keine Daten",
     avg_price: "Ø Preis",
@@ -388,6 +394,12 @@ const STRINGS = {
     source_calculated: "calculated",
     source_bill: "from bill",
     source_mixed: "mixed",
+    source_bill_extrapolated: "from bill (extrapolated)",
+    days_bill_price: "{n} days estimated with the price of the bill",
+    result_incomplete: "incomplete: payments or result are missing for some bills",
+    bills_in_year: "{n} bills",
+    plausibility_warning: "The billed consumption differs by {pct} % from the own readings ({bill} instead of {own} {unit}). Please check consumption, unit and period.",
+    plausibility_short: "Consumption {pct} % compared to own readings",
     gap_no_tariff: "no tariff",
     gap_no_data: "no data",
     avg_price: "Ø price",
@@ -2261,6 +2273,15 @@ class EnergyTrackerPanel extends HTMLElement {
     </div>`;
   }
 
+  _plausibilityText(check, meter) {
+    return this._t("plausibility_warning", {
+      pct: `${check.pct > 0 ? "+" : ""}${this._num(check.pct, 0)}`,
+      bill: this._num(check.bill, 1),
+      own: this._num(check.own, 1),
+      unit: meter.unit,
+    });
+  }
+
   _billCard(details, meter) {
     const bill = details.bill;
     const unit = bill.consumption_unit === "billing" ? "kWh" : meter.unit;
@@ -2283,6 +2304,7 @@ class EnergyTrackerPanel extends HTMLElement {
         ${bill.base_price ? `<span>${esc(this._t("base_cost"))}: <strong>${this._money(bill.base_price)} ${esc(this._t("per_month"))}</strong></span>` : ""}
         ${bill.new_advance !== null && bill.new_advance !== undefined ? `<span>${esc(this._t("new_advance"))}: <strong>${this._money(bill.new_advance)}</strong>${bill.new_advance_from ? ` ${esc(this._t("advance_from"))} ${this._date(bill.new_advance_from)}` : ""}</span>` : ""}
         ${dev.consumption ? `<span>${esc(this._t("deviation"))} ${esc(this._t("consumption"))}: <strong>${dev.consumption.diff > 0 ? "+" : ""}${this._num(dev.consumption.pct ?? 0, 1)} %</strong></span>` : ""}
+        ${dev.plausibility?.warning ? `<span class="warn-chip" title="${esc(this._plausibilityText(dev.plausibility, meter))}">⚠ ${esc(this._t("plausibility_short", { pct: `${dev.plausibility.pct > 0 ? "+" : ""}${this._num(dev.plausibility.pct, 0)}` }))}</span>` : ""}
         ${dev.total_cost ? `<span>${esc(this._t("deviation"))} ${esc(this._t("cost"))}: <strong>${dev.total_cost.diff > 0 ? "+" : ""}${this._money(dev.total_cost.diff)}</strong></span>` : ""}
       </div></div>`;
   }
@@ -2507,6 +2529,8 @@ class EnergyTrackerPanel extends HTMLElement {
         : `<div>${esc(this._t("energy_cost"))}: ${this._money(year.energy_cost)}</div>
       <div>${esc(this._t("base_cost"))}: ${this._money(year.base_cost)}</div>`;
     if (year.estimated_days) html += `<div class="muted">${esc(this._t("days_estimated", { n: year.estimated_days }))}</div>`;
+    if (year.extrapolated_days) html += `<div class="muted">${esc(this._t("days_bill_price", { n: year.extrapolated_days }))}</div>`;
+    if (year.bill_count > 1) html += `<div class="muted">${esc(this._t("bills_in_year", { n: year.bill_count }))}</div>`;
     if (meter && year.consumption !== null) html += `<div>${esc(this._t("consumption"))}: ${this._auto(year.consumption)} ${esc(meter.unit)}</div>`;
     if (year.change !== null && year.change !== undefined) html += `<div>${esc(this._t("change_prev"))}: ${year.change > 0 ? "+" : ""}${this._money(year.change)}</div>`;
     html += `<div class="muted">${esc(this._t("source"))}: ${this._costSource(year)}${year.status === "partial" && year.cost_coverage !== undefined ? ` · ${esc(this._t("covered", { p: this._num(year.cost_coverage * 100, 0) }))}` : ""}</div>`;
@@ -2547,6 +2571,7 @@ class EnergyTrackerPanel extends HTMLElement {
             ? `<div class="warn-text small">${esc(r.incomplete.length ? this._t("incomplete_meters", { names: r.incomplete.join(", ") }) : this._t("covered", { p: this._num((r.coverage || 0) * 100, 0) }))}</div>`
             : "";
         if (y.estimated_days) partial += `<div class="muted small">${esc(this._t("days_estimated", { n: y.estimated_days }))}</div>`;
+        if (y.extrapolated_days) partial += `<div class="muted small">${esc(this._t("days_bill_price", { n: y.extrapolated_days }))}</div>`;
         const avg = r.avg === null ? "–" : r.avgUnit === "ct/kWh" ? `${this._num(r.avg, 2)} ct/kWh` : `${this._money(r.avg)}/${esc(r.avgUnit.replace("€/", ""))}`;
         return `<tr class="${cls}"><td>${esc(r.label)}</td>
           <td><span class="badge source-${y.source || "gap"}">${esc(r.source)}</span></td>
@@ -2557,7 +2582,7 @@ class EnergyTrackerPanel extends HTMLElement {
           <td class="num">${r.change === null ? "–" : `${r.change > 0 ? "+" : ""}${this._money(r.change)}`}</td>
           <td class="num">${r.changePct === null ? "–" : this._delta(r.total, r.total - r.change)}</td>
           <td class="num">${r.advances === null ? "–" : this._money(r.advances)}</td>
-          <td class="num">${r.result === null ? "–" : this._signedResult(r.result)}</td></tr>`;
+          <td class="num">${r.result === null ? "–" : this._signedResult(r.result)}${y.result_incomplete ? ` <span class="warn-text" title="${esc(this._t("result_incomplete"))}">!</span>` : ""}${y.bill_count > 1 ? `<div class="muted small">${esc(this._t("bills_in_year", { n: y.bill_count }))}</div>` : ""}</td></tr>`;
       })
       .join("");
     return `<div class="table-wrap"><table><thead><tr>
@@ -2576,7 +2601,7 @@ class EnergyTrackerPanel extends HTMLElement {
     const single = this._state.costMeter !== "all";
     const meter = single ? data.meters[0] : null;
     const years = single ? meter.years : data.total;
-    const header = ["year", "start", "end", "forecast", "source", "status", "consumption", "unit", "total_cost", "energy_cost", "base_cost", "avg_price", "avg_price_unit", "change", "change_pct", "advances", "result", "cost_coverage_pct", "split_known", "estimated_days"];
+    const header = ["year", "start", "end", "forecast", "source", "status", "consumption", "unit", "total_cost", "energy_cost", "base_cost", "avg_price", "avg_price_unit", "change", "change_pct", "advances", "result", "cost_coverage_pct", "split_known", "estimated_days", "extrapolated_days", "bill_count", "result_incomplete"];
     const rows = [header];
     for (const y of years) {
       rows.push([
@@ -2600,6 +2625,9 @@ class EnergyTrackerPanel extends HTMLElement {
         y.cost_coverage === undefined ? "" : this._csvNum(y.cost_coverage * 100),
         y.split_known === false ? 0 : 1,
         y.estimated_days || 0,
+        y.extrapolated_days || 0,
+        y.bill_count || 0,
+        y.result_incomplete ? 1 : 0,
       ]);
     }
     this._download(`kosten_${meter ? meter.name : "alle"}_${data.mode}_${this._data.today}`, rows);
@@ -3079,6 +3107,7 @@ class EnergyTrackerPanel extends HTMLElement {
         const problems = imported
           .filter((r) => r.status === "conflict")
           .map((r) => this._t("readings_conflict", { date: this._date(r.date), value: this._num(r.value, 2), message: this._errorText(r) }));
+        if (result.plausibility?.warning) problems.unshift(this._plausibilityText(result.plausibility, this._meter(s.meterId)));
         if (problems.length) this._toast([added ? this._t("readings_imported", { added }) : "", ...problems].filter(Boolean).join("\n"), true);
         else this._toast(added ? this._t("readings_imported", { added }) : this._t("saved"));
         s.showBillForm = false;
@@ -3331,6 +3360,8 @@ const STYLE = `
   .badge.source-calculated { background:rgba(3,169,244,.12); }
   .badge.source-bill { background:rgba(67,160,71,.15); }
   .badge.source-mixed { background:rgba(251,140,0,.15); }
+  .badge.source-bill_extrapolated { background:rgba(67,160,71,.10); }
+  .chips span.warn-chip { background:rgba(251,140,0,.18); color:var(--warning-color, #e65100); }
   .badge.source-gap { background:rgba(158,158,158,.2); }
   .change-row .note-input { flex:1; min-width:120px; }
   .timeline ol { list-style:none; margin:8px 0 0; padding:0 0 0 12px; border-left:2px solid var(--divider-color); }

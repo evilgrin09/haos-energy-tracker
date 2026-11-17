@@ -383,8 +383,10 @@ async def test_bill_readings_and_cost_history(hass: HomeAssistant, ws) -> None:
     assert years["2022/23"]["consumption_billing"] == pytest.approx(11000)
     assert years["2022/23"]["result"] == pytest.approx(-150)
     assert years["2023/24"]["total_cost"] == pytest.approx(1400)
-    assert years["2024/25"]["status"] == "gap"
-    assert years["2024/25"]["gap_reason"] == "no_tariff"
+    # 45 days after the last bill are valued with its prices, the rest has no tariff
+    assert years["2024/25"]["status"] == "partial"
+    assert years["2024/25"]["extrapolated_days"] == 45
+    assert years["2024/25"]["source"] == "bill_extrapolated"
     assert msg["result"]["total"] is None
 
     msg = await ws("cost_history", mode="calendar")
@@ -417,3 +419,24 @@ async def test_reading_source_and_estimated_end(hass: HomeAssistant, ws) -> None
     assert msg["result"]["reading_end_estimated"] is True
     readings = store.meter_readings(meter["id"])
     assert [(r["date"], r["source"]) for r in readings] == [("2024-09-30", "bill"), ("2025-11-01", "manual")]
+
+
+async def test_bill_save_reports_implausible_consumption(hass: HomeAssistant, ws) -> None:
+    """The bill is saved, but a warning is returned."""
+    meter = (await ws("meter/save", name="Strom", meter_type="electricity", unit="kWh"))["result"]
+    await ws("reading/save", meter_id=meter["id"], date="2024-09-30", value=1000)
+    await ws("reading/save", meter_id=meter["id"], date="2025-09-30", value=4650)
+    msg = await ws(
+        "bill/save",
+        meter_id=meter["id"],
+        start_date="2024-10-01",
+        end_date="2025-09-30",
+        consumption=5000,
+        total_cost=1500.0,
+    )
+    assert msg["success"], msg
+    assert msg["result"]["plausibility"]["warning"] is True
+    assert msg["result"]["plausibility"]["pct"] == pytest.approx((5000 - 3650) / 3650 * 100)
+    assert msg["result"]["id"] in hass.data[DOMAIN].bills
+    msg = await ws("billing", meter_id=meter["id"])
+    assert msg["result"]["bills"][0]["comparison"]["plausibility"]["warning"] is True
