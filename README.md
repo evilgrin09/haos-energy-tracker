@@ -94,11 +94,23 @@ Der Reiter **Abrechnung** zeigt pro Zähler:
 Bleibt der Versorger gleich, ändern sich aber die Preise, legst du keinen neuen Vertrag an. Stattdessen:
 
 1. Reiter **Abrechnung** → beim Vertrag auf den Stift klicken.
-2. Unter **Preisänderungen** eine Zeile ausfüllen: Datum, ab dem die neuen Preise gelten, dazu Arbeitspreis, Grundpreis, bei Gas optional der neue Umrechnungsfaktor, und eine Notiz.
+2. Unter **Preisänderungen** mit **„+ Zeile hinzufügen“** eine neue Zeile anlegen und ausfüllen: Datum, ab dem die neuen Preise gelten, Arbeitspreis, Grundpreis, bei Gas optional der neue Umrechnungsfaktor, und eine Notiz.
    - Leere Felder übernehmen den bisherigen Wert. Ändert sich nur der Grundpreis, trägst du nur diesen ein.
    - Die Preise im Vertrag selbst sind die Startpreise ab Vertragsbeginn.
-   - Für weitere Änderungen erscheinen beim nächsten Bearbeiten neue leere Zeilen. Zum Löschen leerst du die Zeile (×).
+   - Du kannst beliebig viele Zeilen hinzufügen. Bereits eingetragene Werte bleiben dabei erhalten.
+   - Zum Löschen einer Änderung klickst du auf den **Papierkorb** der Zeile.
+   - Die Liste ist **nach Datum absteigend** sortiert (neueste oben). Die heute gültige Zeile trägt das Badge **„aktuell“**, zukünftige tragen **„geplant“**.
+   - Hat der Vertrag noch keine Änderung, steht beim Öffnen eine leere Zeile bereit.
 3. Speichern.
+
+**Arbeitspreise in Cent:**
+
+- Bei Zählern, die in kWh abgerechnet werden (Strom, Wärme und Gas mit Umrechnung m³ → kWh), gibst du den Arbeitspreis in **ct/kWh** ein, z. B. `39,8` oder `29,3277`.
+  - Bis zu 4 Nachkommastellen sind möglich, Komma und Punkt werden akzeptiert.
+  - Die Anzeige erfolgt überall in ct/kWh: Vertrag, Preisänderungen, Abrechnung, Zeitleiste, Tarifabschnitte und Kostenentwicklung.
+  - Gespeichert wird weiterhin in €/kWh. Bestehende Daten ändern sich nicht.
+- Bei Wasser und anderen Einheiten bleibt es bei € pro Einheit (z. B. €/m³).
+- Liegt ein Arbeitspreis unter 1 ct/kWh oder über 100 ct/kWh, fragt das Panel beim Speichern nach („Wirklich 0,0039 ct/kWh?“). So fallen Tippfehler wie `0,0039` statt `39,8` auf. Für €/m³ gilt die Rückfrage unter 0,10 € oder über 20 €.
 
 Regeln:
 
@@ -107,13 +119,14 @@ Regeln:
 - Ab dem Datum gelten die neuen Preise bis zur nächsten Änderung. Im Abrechnungsjahr wird tageweise anteilig gerechnet: Arbeitspreis nach dem Verbrauch der Tage, Grundpreis zeitanteilig.
 - Die Aufteilung „Tarife im Zeitraum“ zeigt jeden Preisabschnitt mit Zeitraum und Preisen.
 - Die Kostenstatistik im Energie-Dashboard wird ab dem Änderungsdatum neu geschrieben.
-- Die **Zeitleiste** beim Vertrag listet Vertragsbeginn, Preisänderungen, Abschlagsänderungen und Vertragsende chronologisch.
+- Die **Zeitleiste** beim Vertrag listet Preisänderungen, Abschlagsänderungen und Vertragsende, die neueste oben, mit den Badges „aktuell“ und „geplant“. Der Vertragsbeginn mit den Startpreisen steht immer unten.
+- Die Preise auf der Vertragskarte sind die heute gültigen (markiert mit „aktuell“).
 
 **Abschläge**
 
 - Pro Vertrag: Betrag, Anzahl pro Jahr (12 oder 11), Fälligkeitstag und optional das Datum der ersten Zahlung (Standard: erster Fälligkeitstag ab Vertragsbeginn).
 - Bei 11 Abschlägen gibt es im Monat des Stichtags keine Zahlung.
-- **Abschlagsänderungen** („ab 01.03.2026: 95 €“) trägst du beim Vertrag ein.
+- **Abschlagsänderungen** („ab 01.03.2026: 95 €“) trägst du beim Vertrag ein, genauso wie Preisänderungen: „+ Zeile hinzufügen“, Papierkorb zum Löschen, neueste oben, mit den Badges „aktuell“ und „geplant“.
 - Ein **neuer Abschlag aus einer erfassten Abrechnung** wird automatisch ab dem angegebenen Datum übernommen. Steht für denselben Tag auch eine Änderung beim Vertrag, gilt die vom Vertrag.
 
 **Alte Abrechnungen nachtragen**
@@ -296,9 +309,10 @@ data:
 ```bash
 pip install -r requirements_test.txt
 pytest
+node --test tests/js/*.test.mjs   # Preis-Hilfsfunktionen des Panels (läuft auch über pytest)
 ```
 
-Die Rechenlogik liegt in `calc.py` und hat keine Abhängigkeit von Home Assistant. Das Panel (`frontend/energy-tracker-panel.js`) ist eine Web Component ohne Build-Schritt und ohne externe Bibliotheken; die Diagramme sind eigenes SVG.
+Die Rechenlogik liegt in `calc.py` und hat keine Abhängigkeit von Home Assistant. Das Panel (`frontend/energy-tracker-panel.js`) ist eine Web Component ohne Build-Schritt und ohne externe Bibliotheken; die Diagramme sind eigenes SVG. Umrechnung und Prüfung der Preise (ct ↔ €) liegen als reine Funktionen in `frontend/price-format.js`.
 
 ## Ideen für später
 

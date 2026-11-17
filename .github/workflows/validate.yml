@@ -33,3 +33,4 @@ jobs:
         with:
           node-version: "22"
       - run: node --check custom_components/energy_tracker/frontend/energy-tracker-panel.js
+      - run: node --test tests/js/*.test.mjs

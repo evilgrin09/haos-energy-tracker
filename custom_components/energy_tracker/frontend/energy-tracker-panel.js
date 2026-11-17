@@ -5,6 +5,18 @@
  * All calculations happen in the backend, this file renders data and charts.
  */
 
+import {
+  changeStatus,
+  formatPrice,
+  implausiblePrice,
+  newestFirst,
+  parseDecimal,
+  parsePriceInput,
+  priceInputValue,
+  priceUnitLabel,
+  usesCent,
+} from "./price-format.js?v=0.6.3";
+
 const DOMAIN = "energy_tracker";
 
 /* ------------------------------------------------------------------ i18n */
@@ -24,10 +36,17 @@ const STRINGS = {
     reading_end_estimated: "Endstand ist geschätzt (wird nicht als Ablesung übernommen)",
     estimated_short: "geschätzt",
     price_changes: "Preisänderungen",
-    unit_price_short: "Arbeitspreis/Einheit",
+    unit_price_short: "Arbeitspreis",
     base_price_short: "Grundpreis/Monat",
-    price_changes_hint: "Ab dem Datum gelten die neuen Preise bis zur nächsten Änderung. Leere Felder übernehmen den bisherigen Wert. Zum Löschen das Datum leeren.",
-    clear_row: "Zeile leeren",
+    price_changes_hint: "Ab dem Datum gelten die neuen Preise bis zur nächsten Änderung. Leere Felder übernehmen den bisherigen Wert. Neueste Änderung oben.",
+    unit_price_cent: "Arbeitspreis (ct/kWh)",
+    add_row: "+ Zeile hinzufügen",
+    delete_row: "Zeile löschen",
+    badge_current: "aktuell",
+    badge_planned: "geplant",
+    current_prices: "aktuell",
+    last_valid_prices: "zuletzt gültig",
+    confirm_price: "Wirklich {value} {unit}?\n\nBitte den Arbeitspreis prüfen (Tippfehler wie 0,0039 statt 39,8?).",
     timeline: "Zeitleiste",
     timeline_start: "Vertragsbeginn",
     timeline_price: "Preisänderung",
@@ -108,7 +127,7 @@ const STRINGS = {
     first_payment: "Erste Zahlung (optional)",
     advance_changes: "Abschlagsänderungen",
     advance_from: "ab",
-    advance_changes_hint: "Ab dem Datum gilt der neue Betrag. Leere Zeilen werden ignoriert. Ein neuer Abschlag aus einer erfassten Abrechnung wird automatisch berücksichtigt.",
+    advance_changes_hint: "Ab dem Datum gilt der neue Betrag. Neueste Änderung oben, leere Zeilen werden ignoriert. Ein neuer Abschlag aus einer erfassten Abrechnung wird automatisch berücksichtigt.",
     tariffs_title: "Tarife & Verträge",
     add_bill: "Abrechnung erfassen",
     bills_title: "Abrechnungen des Versorgers",
@@ -365,8 +384,15 @@ const STRINGS = {
     price_changes: "Price changes",
     unit_price_short: "Unit price",
     base_price_short: "Base price/month",
-    price_changes_hint: "The new prices apply from the date until the next change. Empty fields keep the previous value. Clear the date to delete a change.",
-    clear_row: "Clear row",
+    price_changes_hint: "The new prices apply from the date until the next change. Empty fields keep the previous value. Newest change on top.",
+    unit_price_cent: "Unit price (ct/kWh)",
+    add_row: "+ Add row",
+    delete_row: "Delete row",
+    badge_current: "current",
+    badge_planned: "planned",
+    current_prices: "current",
+    last_valid_prices: "last valid",
+    confirm_price: "Really {value} {unit}?\n\nPlease check the unit price (typo such as 0.0039 instead of 39.8?).",
     timeline: "Timeline",
     timeline_start: "Contract start",
     timeline_price: "Price change",
@@ -447,7 +473,7 @@ const STRINGS = {
     first_payment: "First payment (optional)",
     advance_changes: "Changes of the advance payment",
     advance_from: "from",
-    advance_changes_hint: "The new amount applies from the date. Empty rows are ignored. A new advance payment from a recorded bill is applied automatically.",
+    advance_changes_hint: "The new amount applies from the date. Newest change on top, empty rows are ignored. A new advance payment from a recorded bill is applied automatically.",
     tariffs_title: "Tariffs & contracts",
     add_bill: "Add bill",
     bills_title: "Bills of the utility",
@@ -745,15 +771,8 @@ const isoWeek = (iso) => {
   return 1 + Math.round(((d - firstThursday) / DAY_MS - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
 };
 
-/** Parse "25.600,5", "25600,5" or "25600.5" into a number. */
-const parseNum = (value) => {
-  let text = String(value ?? "").trim().replace(/\s/g, "");
-  if (text === "") return undefined;
-  if (text.includes(",")) text = text.replace(/\./g, "").replace(",", ".");
-  else if ((text.match(/\./g) || []).length > 1) text = text.replace(/\./g, "");
-  const num = Number(text);
-  return Number.isFinite(num) ? num : NaN;
-};
+/** Parse "25.600,5", "25600,5" or "25600.5" into a number (see price-format.js). */
+const parseNum = parseDecimal;
 
 /** Billing date ("Stichtag") of a year, clamped to the month length. */
 const billingDate = (year, day, month) => {
@@ -2236,7 +2255,7 @@ class EnergyTrackerPanel extends HTMLElement {
         ${b.segments.map((seg) => `<tr><td>${esc([seg.provider, seg.tariff].filter(Boolean).join(" · ") || "–")}${seg.note ? `<div class="muted small">${esc(seg.note)}</div>` : ""}</td>
           <td>${this._date(seg.start)} – ${this._date(seg.end)}</td><td class="num">${seg.days}</td>
           <td class="num">${this._auto(seg.consumption)} ${u}</td>
-          <td class="num">${this._num(seg.unit_price, 4)} ${esc(this._currencySymbol)}${seg.conversion_factor !== 1 ? ` <span class="muted">(${esc(this._t("factor_short"))} ${this._num(seg.conversion_factor, 4)})</span>` : ""}</td>
+          <td class="num">${this._priceText(seg.unit_price, meter, seg.conversion_factor)}${seg.conversion_factor !== 1 ? ` <span class="muted">(${esc(this._t("factor_short"))} ${this._num(seg.conversion_factor, 4)})</span>` : ""}</td>
           <td class="num">${this._money(seg.base_price)}</td><td class="num">${this._money(seg.energy_cost)}</td><td class="num">${this._money(seg.base_cost)}</td></tr>`).join("")}
         </tbody></table></div></details>`;
     }
@@ -2300,7 +2319,7 @@ class EnergyTrackerPanel extends HTMLElement {
         ${bill.advances_paid !== null && bill.advances_paid !== undefined ? `<span>${esc(this._t("advances"))}: <strong>${this._money(bill.advances_paid)}</strong></span>` : ""}
         ${bill.reading_start !== null && bill.reading_start !== undefined ? `<span>${esc(this._t("reading_bill_start"))}: <strong>${this._num(bill.reading_start, 2)}</strong></span>` : ""}
         ${bill.reading_end !== null && bill.reading_end !== undefined ? `<span>${esc(this._t("reading_bill_end"))}: <strong>${this._num(bill.reading_end, 2)}</strong>${bill.reading_end_estimated ? ` (${esc(this._t("estimated_short"))})` : ""}</span>` : ""}
-        ${bill.unit_price ? `<span>${esc(this._t("energy_cost"))}: <strong>${this._num(bill.unit_price, 4)} ${esc(this._currencySymbol)}</strong></span>` : ""}
+        ${bill.unit_price ? `<span>${esc(this._t("energy_cost"))}: <strong>${this._priceText(bill.unit_price, meter, bill.conversion_factor)}</strong></span>` : ""}
         ${bill.base_price ? `<span>${esc(this._t("base_cost"))}: <strong>${this._money(bill.base_price)} ${esc(this._t("per_month"))}</strong></span>` : ""}
         ${bill.new_advance !== null && bill.new_advance !== undefined ? `<span>${esc(this._t("new_advance"))}: <strong>${this._money(bill.new_advance)}</strong>${bill.new_advance_from ? ` ${esc(this._t("advance_from"))} ${this._date(bill.new_advance_from)}` : ""}</span>` : ""}
         ${dev.consumption ? `<span>${esc(this._t("deviation"))} ${esc(this._t("consumption"))}: <strong>${dev.consumption.diff > 0 ? "+" : ""}${this._num(dev.consumption.pct ?? 0, 1)} %</strong></span>` : ""}
@@ -2309,44 +2328,112 @@ class EnergyTrackerPanel extends HTMLElement {
       </div></div>`;
   }
 
+  /* prices: ct/kWh for kWh billing units, otherwise currency per unit */
+
+  _cent(meter, factor) {
+    return usesCent(meter, factor);
+  }
+
+  _priceUnit(meter, factor) {
+    return priceUnitLabel(meter, factor, this._currencySymbol);
+  }
+
+  _priceText(euro, meter, factor) {
+    return esc(formatPrice(euro, this._cent(meter, factor), this._priceUnit(meter, factor), this._lang));
+  }
+
+  _unitPriceLabel(meter, factor) {
+    return this._cent(meter, factor)
+      ? this._t("unit_price_cent")
+      : this._t("unit_price", { currency: this._currencySymbol, unit: this._priceUnit(meter, factor).split("/")[1] });
+  }
+
+  _priceInputAttrs(cent) {
+    // ct: up to 4 decimal places, €: up to 6
+    const digits = cent ? 4 : 6;
+    return `type="text" inputmode="decimal" pattern="[0-9]+([.,][0-9]{1,${digits}})?" autocomplete="off"`;
+  }
+
+  _badge(status) {
+    return status ? `<span class="badge status-${status}">${esc(this._t(`badge_${status}`))}</span>` : "";
+  }
+
+  /** Ask before saving implausible unit prices (stored €/unit). */
+  _confirmPrices(prices, cent, unit) {
+    for (const euro of prices) {
+      const shown = implausiblePrice(euro, cent);
+      if (shown === null) continue;
+      const value = new Intl.NumberFormat(this._lang, { maximumFractionDigits: 4 }).format(shown);
+      if (!confirm(this._t("confirm_price", { value, unit }))) return false;
+    }
+    return true;
+  }
+
+  _currentPhase(c) {
+    const today = this._data.today;
+    let phase = { unit_price: c.unit_price, base_price: c.base_price, conversion_factor: c.conversion_factor };
+    for (const pc of [...(c.price_changes || [])].sort((a, b) => (a.date < b.date ? -1 : 1))) {
+      if (pc.date > today) break;
+      phase = {
+        unit_price: pc.unit_price ?? phase.unit_price,
+        base_price: pc.base_price ?? phase.base_price,
+        conversion_factor: pc.conversion_factor ?? phase.conversion_factor,
+      };
+    }
+    let advance = c.advance_payment;
+    for (const ch of [...(c.advance_changes || [])].sort((a, b) => (a.date < b.date ? -1 : 1))) {
+      if (ch.date <= today) advance = ch.amount;
+    }
+    return { ...phase, advance_payment: advance };
+  }
+
   _contractCard(c, meter) {
-    const cur = this._currencySymbol;
-    const billingUnit = c.conversion_factor && c.conversion_factor !== 1 ? "kWh" : meter.unit;
     const changes = c.advance_changes || [];
+    const prices = c.price_changes || [];
+    // with changes the chips show the prices valid today
+    const current = prices.length || changes.length ? this._currentPhase(c) : c;
+    const factor = current.conversion_factor;
+    const running = c.start_date <= this._data.today && (!c.end_date || this._data.today <= c.end_date);
+    const tagText = running ? this._t("current_prices") : this._t("last_valid_prices");
+    const tag = prices.length || changes.length ? ` <em class="chip-tag">(${esc(tagText)})</em>` : "";
     return `<div class="card" style="--accent:${TYPE_COLOR[meter.type]}">
       <div class="card-head"><div class="grow"><div class="card-title">${esc(c.provider || this._t("tab_contracts"))}${c.tariff ? ` · ${esc(c.tariff)}` : ""}</div>
         <div class="muted">${this._date(c.start_date)} – ${c.end_date ? this._date(c.end_date) : esc(this._t("open_end"))}${c.customer_number ? ` · ${esc(this._t("customer_number"))} ${esc(c.customer_number)}` : ""}${c.notice_period ? ` · ${esc(this._t("notice_period"))}: ${esc(c.notice_period)}` : ""}</div></div>
         <button class="icon admin-only" data-action="edit-contract" data-id="${c.id}" title="${esc(this._t("edit"))}"><ha-icon icon="mdi:pencil"></ha-icon></button>
         <button class="icon admin-only" data-action="delete-contract" data-id="${c.id}" title="${esc(this._t("delete"))}"><ha-icon icon="mdi:delete"></ha-icon></button></div>
       <div class="chips">
-        <span>${esc(this._t("energy_cost"))}: <strong>${this._num(c.unit_price || 0, 4)} ${esc(cur)}/${esc(billingUnit)}</strong></span>
-        <span>${esc(this._t("base_cost"))}: <strong>${this._money(c.base_price || 0)} ${esc(this._t("per_month"))}</strong></span>
-        <span>${esc(this._t("advance"))}: <strong>${this._money(c.advance_payment || 0)}</strong> · ${c.payments_per_year || 12}× · ${esc(this._t("payment_day"))} ${c.payment_day || 1}.</span>
-        ${c.conversion_factor && c.conversion_factor !== 1 ? `<span>${esc(this._t("conversion_factor", { unit: meter.unit }))}: <strong>${this._num(c.conversion_factor, 4)}</strong></span>` : ""}
+        <span>${esc(this._t("energy_cost"))}${tag}: <strong>${this._priceText(current.unit_price || 0, meter, factor)}</strong></span>
+        <span>${esc(this._t("base_cost"))}: <strong>${this._money(current.base_price || 0)} ${esc(this._t("per_month"))}</strong></span>
+        <span>${esc(this._t("advance"))}: <strong>${this._money(current.advance_payment || 0)}</strong> · ${c.payments_per_year || 12}× · ${esc(this._t("payment_day"))} ${c.payment_day || 1}.</span>
+        ${factor && factor !== 1 ? `<span>${esc(this._t("conversion_factor", { unit: meter.unit }))}: <strong>${this._num(factor, 4)}</strong></span>` : ""}
       </div>
-      ${(c.price_changes || []).length || changes.length ? this._contractTimeline(c, meter, billingUnit) : ""}</div>`;
+      ${prices.length || changes.length ? this._contractTimeline(c, meter) : ""}</div>`;
   }
 
-  _contractTimeline(c, meter, billingUnit) {
-    const cur = this._currencySymbol;
-    const factor = meter.type === "gas" || (c.conversion_factor && c.conversion_factor !== 1);
+  _contractTimeline(c, meter) {
+    const showFactor = meter.type === "gas" || (c.conversion_factor && c.conversion_factor !== 1);
     const priceText = (unit, base, conv) =>
       [
-        unit !== null && unit !== undefined ? `${this._num(unit, 4)} ${esc(cur)}/${esc(billingUnit)}` : null,
+        unit !== null && unit !== undefined ? this._priceText(unit, meter, conv ?? c.conversion_factor) : null,
         base !== null && base !== undefined ? `${this._money(base)} ${esc(this._t("per_month"))}` : null,
-        factor && conv !== null && conv !== undefined ? `${esc(this._t("factor_short"))} ${this._num(conv, 4)}` : null,
+        showFactor && conv !== null && conv !== undefined ? `${esc(this._t("factor_short"))} ${this._num(conv, 4)}` : null,
       ]
         .filter(Boolean)
         .join(" · ");
+    const today = this._data.today;
+    const priceStatus = changeStatus((c.price_changes || []).map((pc) => pc.date), today, c.start_date, c.end_date);
+    const advanceStatus = changeStatus((c.advance_changes || []).map((ch) => ch.date), today, c.start_date, c.end_date);
+    const startStatus = priceStatus.get(c.start_date) || advanceStatus.get(c.start_date) || null;
     const events = [
-      { date: c.start_date, order: 0, kind: "start", text: priceText(c.unit_price, c.base_price, c.conversion_factor) + ` · ${esc(this._t("advance"))} ${this._money(c.advance_payment || 0)}` },
-      ...(c.price_changes || []).map((pc) => ({ date: pc.date, order: 1, kind: "price", text: priceText(pc.unit_price, pc.base_price, pc.conversion_factor) + (pc.note ? ` · ${esc(pc.note)}` : "") })),
-      ...(c.advance_changes || []).map((ch) => ({ date: ch.date, order: 2, kind: "advance", text: this._money(ch.amount) })),
+      ...newestFirst(c.price_changes).map((pc) => ({ date: pc.date, order: 1, kind: "price", status: priceStatus.get(pc.date), text: priceText(pc.unit_price, pc.base_price, pc.conversion_factor) + (pc.note ? ` · ${esc(pc.note)}` : "") })),
+      ...newestFirst(c.advance_changes).map((ch) => ({ date: ch.date, order: 2, kind: "advance", status: advanceStatus.get(ch.date), text: this._money(ch.amount) })),
     ];
-    if (c.end_date) events.push({ date: c.end_date, order: 3, kind: "end", text: "" });
-    events.sort((a, b) => (a.date === b.date ? a.order - b.order : a.date < b.date ? -1 : 1));
-    return `<details class="timeline"><summary>${esc(this._t("timeline"))} (${events.length})</summary><ol>
-      ${events.map((e) => `<li class="tl-${e.kind}"><span class="tl-date">${this._date(e.date)}</span><span class="tl-kind">${esc(this._t(`timeline_${e.kind}`))}</span><span>${e.text}</span></li>`).join("")}
+    if (c.end_date) events.push({ date: c.end_date, order: 0, kind: "end", text: "" });
+    // newest first; the contract start (start prices) is always at the bottom
+    events.sort((a, b) => (a.date === b.date ? a.order - b.order : a.date < b.date ? 1 : -1));
+    events.push({ date: c.start_date, kind: "start", status: startStatus, text: priceText(c.unit_price, c.base_price, c.conversion_factor) + ` · ${esc(this._t("advance"))} ${this._money(c.advance_payment || 0)}` });
+    return `<details class="timeline" ${events.length <= 8 ? "open" : ""}><summary>${esc(this._t("timeline"))} (${events.length})</summary><ol>
+      ${events.map((e) => `<li class="tl-${e.kind}"><span class="tl-date">${this._date(e.date)}</span><span class="tl-kind">${esc(this._t(`timeline_${e.kind}`))}</span><span>${e.text}</span>${this._badge(e.status)}</li>`).join("")}
       </ol></details>`;
   }
 
@@ -2357,21 +2444,32 @@ class EnergyTrackerPanel extends HTMLElement {
       return esc(typeof value === "number" ? this._plain(value) : value);
     };
     const showFactor = meter.type === "gas" || (c?.conversion_factor && c.conversion_factor !== 1);
-    const priceUnit = showFactor && meter.unit === "m³" ? "kWh" : meter.unit;
+    const factor = c?.conversion_factor ?? (meter.unit === "m³" && meter.type === "gas" ? 10.5 : 1);
+    const cent = this._cent(meter, factor);
     const dec = 'type="text" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)*" autocomplete="off"';
-    const changes = [...(c?.advance_changes || []), { date: "", amount: "" }, { date: "", amount: "" }];
-    const prices = [...(c?.price_changes || []), {}, {}];
-    const pcVal = (value) => (value === null || value === undefined || value === "" ? "" : esc(this._plain(value)));
+    const today = this._data.today;
+    const start = c?.start_date || null;
+    const end = c?.end_date || null;
+    this._rowContext = {
+      cent,
+      showFactor,
+      unitLabel: this._unitPriceLabel(meter, factor),
+      advanceStatus: changeStatus((c?.advance_changes || []).map((ch) => ch.date), today, start, end),
+      priceStatus: changeStatus((c?.price_changes || []).map((pc) => pc.date), today, start, end),
+    };
+    // newest first; one empty row if there is no change yet
+    const changes = c?.advance_changes?.length ? newestFirst(c.advance_changes) : [{}];
+    const prices = c?.price_changes?.length ? newestFirst(c.price_changes) : [{}];
     const perYear = Number(c?.payments_per_year || 12);
     return `<div class="card"><div class="card-title">${esc(c ? this._t("edit") : this._t("add_contract"))} – ${esc(meter.name)}</div>
       <form data-form="contract" class="form-grid">
         <label class="field"><span>${esc(this._t("provider"))}</span><input name="provider" value="${v("provider")}"></label>
         <label class="field"><span>${esc(this._t("tariff"))}</span><input name="tariff" value="${v("tariff")}"></label>
         <label class="field"><span>${esc(this._t("customer_number"))}</span><input name="customer_number" value="${v("customer_number")}"></label>
-        <label class="field"><span>${esc(this._t("start_date"))}</span><input type="date" name="start_date" required value="${v("start_date", startOfMonth(this._data.today))}"></label>
+        <label class="field"><span>${esc(this._t("start_date"))}</span><input type="date" name="start_date" required value="${v("start_date", startOfMonth(today))}"></label>
         <label class="field"><span>${esc(this._t("end_date"))}</span><input type="date" name="end_date" value="${v("end_date")}"></label>
         <label class="field"><span>${esc(this._t("notice_period"))}</span><input name="notice_period" value="${v("notice_period")}" placeholder="1 Monat"></label>
-        <label class="field"><span>${esc(this._t("unit_price", { currency: cur, unit: priceUnit }))}</span><input ${dec} name="unit_price" value="${v("unit_price")}" placeholder="0,32"></label>
+        <label class="field"><span>${esc(this._unitPriceLabel(meter, factor))}</span><input ${this._priceInputAttrs(cent)} name="unit_price" value="${esc(priceInputValue(c?.unit_price, cent, this._lang))}" placeholder="${cent ? "39,8" : "4,25"}"></label>
         <label class="field"><span>${esc(this._t("base_price", { currency: cur }))}</span><input ${dec} name="base_price" value="${v("base_price")}" placeholder="12,50"></label>
         ${showFactor ? `<label class="field"><span>${esc(this._t("conversion_factor", { unit: meter.unit }))}</span><input ${dec} name="conversion_factor" value="${v("conversion_factor", meter.unit === "m³" ? 10.5 : 1)}"><small>${esc(this._t("conversion_hint"))}</small></label>` : ""}
         <label class="field"><span>${esc(this._t("advance_payment", { currency: cur }))}</span><input ${dec} name="advance_payment" value="${v("advance_payment")}" placeholder="85"></label>
@@ -2381,21 +2479,39 @@ class EnergyTrackerPanel extends HTMLElement {
         <label class="field"><span>${esc(this._t("payment_day"))}</span><input type="number" name="payment_day" min="1" max="31" step="1" value="${v("payment_day", 1)}"></label>
         <label class="field"><span>${esc(this._t("first_payment"))}</span><input type="date" name="first_payment" value="${v("first_payment")}"></label>
         <fieldset class="wide changes"><legend>${esc(this._t("advance_changes"))}</legend>
-          ${changes.map((ch, i) => `<div class="change-row"><span>${esc(this._t("advance_from"))}</span><input type="date" name="chg_date_${i}" value="${esc(ch.date)}">
-            <input ${dec} name="chg_amount_${i}" value="${ch.amount === "" ? "" : esc(this._plain(ch.amount))}" placeholder="${esc(this._t("amount"))}"><span>${esc(cur)}</span></div>`).join("")}
+          <div class="rows" data-list="chg">${changes.map((ch) => this._changeRow("chg", ch)).join("")}</div>
+          <button type="button" class="flat small-button" data-action="add-row" data-list="chg">${esc(this._t("add_row"))}</button>
           <small>${esc(this._t("advance_changes_hint"))}</small></fieldset>
         <fieldset class="wide changes"><legend>${esc(this._t("price_changes"))}</legend>
-          ${prices.map((pc, i) => `<div class="change-row"><span>${esc(this._t("advance_from"))}</span><input type="date" name="pc_date_${i}" value="${esc(pc.date || "")}">
-            <input ${dec} name="pc_unit_${i}" value="${pcVal(pc.unit_price)}" placeholder="${esc(this._t("energy_cost"))}" title="${esc(this._t("unit_price", { currency: cur, unit: priceUnit }))}">
-            <input ${dec} name="pc_base_${i}" value="${pcVal(pc.base_price)}" placeholder="${esc(this._t("base_cost"))}" title="${esc(this._t("base_price", { currency: cur }))}">
-            ${showFactor ? `<input ${dec} name="pc_factor_${i}" value="${pcVal(pc.conversion_factor)}" placeholder="${esc(this._t("factor_short"))}" title="${esc(this._t("conversion_factor", { unit: meter.unit }))}">` : ""}
-            <input name="pc_note_${i}" class="note-input" value="${esc(pc.note || "")}" placeholder="${esc(this._t("note"))}">
-            <button type="button" class="icon" data-action="clear-row" title="${esc(this._t("clear_row"))}"><ha-icon icon="mdi:close"></ha-icon></button></div>`).join("")}
+          <div class="rows" data-list="pc">${prices.map((pc) => this._changeRow("pc", pc)).join("")}</div>
+          <button type="button" class="flat small-button" data-action="add-row" data-list="pc">${esc(this._t("add_row"))}</button>
           <small>${esc(this._t("price_changes_hint"))}</small></fieldset>
         <label class="field wide"><span>${esc(this._t("note"))}</span><input name="note" value="${v("note")}"></label>
         <div class="buttons wide"><button class="primary" type="submit">${esc(this._t("save"))}</button>
           <button type="button" class="flat" data-action="cancel-contract">${esc(this._t("cancel"))}</button></div>
       </form></div>`;
+  }
+
+  /** One row of the advance ("chg") or price ("pc") changes; values are read from the DOM on submit. */
+  _changeRow(list, item = {}) {
+    const ctx = this._rowContext || {};
+    const cur = this._currencySymbol;
+    const dec = 'type="text" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)*" autocomplete="off"';
+    const plain = (value) => (value === null || value === undefined || value === "" ? "" : esc(this._plain(value)));
+    const remove = `<button type="button" class="icon" data-action="remove-row" title="${esc(this._t("delete_row"))}"><ha-icon icon="mdi:delete"></ha-icon></button>`;
+    if (list === "chg") {
+      return `<div class="change-row" data-list="chg"><span>${esc(this._t("advance_from"))}</span>
+        <input type="date" data-field="date" value="${esc(item.date || "")}">
+        <input ${dec} data-field="amount" value="${plain(item.amount)}" placeholder="${esc(this._t("amount"))}"><span>${esc(cur)}</span>
+        ${this._badge(item.date ? ctx.advanceStatus?.get(item.date) : null)}${remove}</div>`;
+    }
+    return `<div class="change-row" data-list="pc"><span>${esc(this._t("advance_from"))}</span>
+      <input type="date" data-field="date" value="${esc(item.date || "")}">
+      <input ${this._priceInputAttrs(ctx.cent)} data-field="unit_price" value="${esc(priceInputValue(item.unit_price, ctx.cent, this._lang))}" placeholder="${esc(ctx.cent ? "ct/kWh" : this._t("energy_cost"))}" title="${esc(ctx.unitLabel || "")}">
+      <input ${dec} data-field="base_price" value="${plain(item.base_price)}" placeholder="${esc(this._t("base_cost"))}" title="${esc(this._t("base_price", { currency: cur }))}">
+      ${ctx.showFactor ? `<input ${dec} data-field="conversion_factor" value="${plain(item.conversion_factor)}" placeholder="${esc(this._t("factor_short"))}">` : ""}
+      <input class="note-input" data-field="note" value="${esc(item.note || "")}" placeholder="${esc(this._t("note"))}">
+      ${this._badge(item.date ? ctx.priceStatus?.get(item.date) : null)}${remove}</div>`;
   }
 
   _billForm(meter, bill, data) {
@@ -2440,7 +2556,7 @@ class EnergyTrackerPanel extends HTMLElement {
         </fieldset>
         <fieldset class="wide changes"><legend>${esc(this._t("bill_prices"))}</legend>
           <div class="change-row">
-            <span>${esc(this._t("energy_cost"))}</span><input ${dec} name="unit_price" value="${num("unit_price")}" title="${esc(this._t("unit_price", { currency: cur, unit: meter.type === "gas" ? "kWh" : meter.unit }))}">
+            <span>${esc(this._unitPriceLabel(meter, bill?.conversion_factor))}</span><input ${this._priceInputAttrs(this._cent(meter, bill?.conversion_factor))} name="unit_price" value="${esc(priceInputValue(bill?.unit_price, this._cent(meter, bill?.conversion_factor), this._lang))}">
             <span>${esc(this._t("base_cost"))}</span><input ${dec} name="base_price" value="${num("base_price")}" title="${esc(this._t("base_price", { currency: cur }))}">
             ${meter.type === "gas" ? `<span>${esc(this._t("factor_short"))}</span><input ${dec} name="conversion_factor" value="${num("conversion_factor")}">` : ""}
           </div>
@@ -2838,8 +2954,15 @@ class EnergyTrackerPanel extends HTMLElement {
       case "export-costs":
         this._exportCostsCsv();
         break;
-      case "clear-row":
-        for (const input of el.closest(".change-row").querySelectorAll("input")) input.value = "";
+      case "add-row": {
+        // append an empty row without re-rendering (keeps entered values)
+        const rows = el.closest("fieldset").querySelector(`.rows[data-list="${el.dataset.list}"]`);
+        rows.insertAdjacentHTML("beforeend", this._changeRow(el.dataset.list));
+        rows.lastElementChild.querySelector('input[data-field="date"]')?.focus();
+        break;
+      }
+      case "remove-row":
+        el.closest(".change-row").remove();
         break;
       case "view-photo":
         await this._viewPhoto(el.dataset.id);
@@ -3026,26 +3149,29 @@ class EnergyTrackerPanel extends HTMLElement {
       this._startImport([{ name: "", label: this._t("import_textfield"), text: data.csv, meterId: s.meterId }]);
     } else if (kind === "contract") {
       const num = (key) => parseNum(data[key]);
-      const changes = [];
-      const priceChanges = [];
-      for (let i = 0; data[`pc_date_${i}`] !== undefined; i++) {
-        if (!data[`pc_date_${i}`]) continue;
-        const value = (key) => {
-          const parsed = parseNum(data[`${key}_${i}`]);
-          return parsed === undefined || Number.isNaN(parsed) ? null : parsed;
-        };
-        priceChanges.push({
-          date: data[`pc_date_${i}`],
-          unit_price: value("pc_unit"),
-          base_price: value("pc_base"),
-          conversion_factor: data[`pc_factor_${i}`] === undefined ? null : value("pc_factor"),
-          note: data[`pc_note_${i}`] || "",
-        });
-      }
-      for (let i = 0; data[`chg_date_${i}`] !== undefined; i++) {
-        const amount = parseNum(data[`chg_amount_${i}`]);
-        if (data[`chg_date_${i}`] && amount !== undefined && !Number.isNaN(amount)) changes.push({ date: data[`chg_date_${i}`], amount });
-      }
+      const meter = this._meter(s.meterId);
+      const factorInput = num("conversion_factor");
+      const cent = this._cent(meter, factorInput ?? (meter.type === "gas" ? 10.5 : 1));
+      const optional = (value) => (value === undefined || Number.isNaN(value) ? null : value);
+      const rows = (list) =>
+        [...form.querySelectorAll(`.change-row[data-list="${list}"]`)].map((row) =>
+          Object.fromEntries([...row.querySelectorAll("[data-field]")].map((input) => [input.dataset.field, input.value.trim()]))
+        );
+      const changes = rows("chg")
+        .map((r) => ({ date: r.date, amount: parseNum(r.amount) }))
+        .filter((r) => r.date && r.amount !== undefined && !Number.isNaN(r.amount));
+      const priceChanges = rows("pc")
+        .filter((r) => r.date)
+        .map((r) => ({
+          date: r.date,
+          unit_price: optional(parsePriceInput(r.unit_price, cent)),
+          base_price: optional(parseNum(r.base_price)),
+          conversion_factor: r.conversion_factor === undefined ? null : optional(parseNum(r.conversion_factor)),
+          note: r.note || "",
+        }));
+      const unitPrice = optional(parsePriceInput(data.unit_price, cent)) ?? 0;
+      const unitLabel = this._priceUnit(meter, factorInput);
+      if (!this._confirmPrices([unitPrice || null, ...priceChanges.map((p) => p.unit_price)], cent, unitLabel)) return;
       const payload = {
         meter_id: s.meterId,
         provider: data.provider || null,
@@ -3053,7 +3179,7 @@ class EnergyTrackerPanel extends HTMLElement {
         customer_number: data.customer_number || null,
         start_date: data.start_date,
         end_date: data.end_date || null,
-        unit_price: num("unit_price") ?? 0,
+        unit_price: unitPrice,
         base_price: num("base_price") ?? 0,
         advance_payment: num("advance_payment") ?? 0,
         conversion_factor: num("conversion_factor") ?? 1,
@@ -3072,6 +3198,12 @@ class EnergyTrackerPanel extends HTMLElement {
         this._render();
       }
     } else if (kind === "bill") {
+      const billMeter = this._meter(s.meterId);
+      const billFactor = parseNum(data.conversion_factor);
+      const billCent = this._cent(billMeter, billFactor);
+      let billUnitPrice = parsePriceInput(data.unit_price, billCent);
+      if (billUnitPrice !== null && Number.isNaN(billUnitPrice)) billUnitPrice = null;
+      if (!this._confirmPrices([billUnitPrice], billCent, this._priceUnit(billMeter, billFactor))) return;
       const num = (key) => {
         const value = parseNum(String(data[key] ?? "").replace(/^-/, ""));
         if (value === undefined || Number.isNaN(value)) return null;
@@ -3092,7 +3224,7 @@ class EnergyTrackerPanel extends HTMLElement {
         reading_start: num("reading_start"),
         reading_end: num("reading_end"),
         reading_end_estimated: Boolean(form.elements.reading_end_estimated?.checked),
-        unit_price: num("unit_price"),
+        unit_price: billUnitPrice,
         base_price: num("base_price"),
         conversion_factor: data.conversion_factor === undefined ? undefined : num("conversion_factor"),
         take_readings: Boolean(form.elements.take_readings?.checked),
@@ -3346,6 +3478,12 @@ const STYLE = `
   tr.editing td { background:var(--secondary-background-color); }
   details summary { cursor:pointer; font-weight:500; }
   .readonly .admin-only { display:none !important; }
+  .chips .chip-tag { font-style:normal; color:var(--secondary-text-color); }
+  .badge.status-current { background:rgba(67,160,71,.15); color:var(--success-color, #2e7d32); }
+  .badge.status-planned { background:rgba(3,169,244,.15); color:var(--info-color, #0277bd); }
+  .rows { display:flex; flex-direction:column; }
+  button.small-button { padding:4px 10px; font-size:13px; margin:2px 0 6px; align-self:flex-start; }
+  fieldset.changes { display:flex; flex-direction:column; }
   .legend i.unsplit-swatch { background:repeating-linear-gradient(90deg, var(--c) 0 6px, transparent 6px 7px); opacity:.75; }
   .chart .gap-bar { fill:none; stroke:var(--secondary-text-color); stroke-dasharray:4 4; opacity:.6; }
   .chart .gap-text { font-size:10px; }

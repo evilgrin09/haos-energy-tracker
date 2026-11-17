@@ -113,12 +113,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-def _file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+def _file_hash(directory: Path) -> str:
+    """Hash of all frontend modules (the panel imports price-format.js)."""
+    digest = hashlib.sha256()
+    for path in sorted(directory.glob("*.js")):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 async def _async_register_panel(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    version = await hass.async_add_executor_job(_file_hash, FRONTEND_DIR / PANEL_FILE)
+    version = await hass.async_add_executor_job(_file_hash, FRONTEND_DIR)
     await panel_custom.async_register_panel(
         hass,
         webcomponent_name=PANEL_COMPONENT,
